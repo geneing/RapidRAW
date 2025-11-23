@@ -10,11 +10,8 @@ use crate::image_processing::{AllAdjustments, GpuContext};
 use crate::lut_processing::Lut;
 use crate::{AppState, GpuImageCache};
 
-pub fn get_or_init_gpu_context(state: &tauri::State<AppState>) -> Result<GpuContext, String> {
-    let mut context_lock = state.gpu_context.lock().unwrap();
-    if let Some(context) = &*context_lock {
-        return Ok(context.clone());
-    }
+/// Initialize GPU context without requiring AppState. Used by both Tauri and CLI modes.
+pub fn init_gpu_context() -> Result<GpuContext, String> {
     let instance_desc = wgpu::InstanceDescriptor::from_env_or_default();
     let instance = wgpu::Instance::new(&instance_desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -45,11 +42,19 @@ pub fn get_or_init_gpu_context(state: &tauri::State<AppState>) -> Result<GpuCont
     ))
     .map_err(|e| e.to_string())?;
 
-    let new_context = GpuContext {
+    Ok(GpuContext {
         device: Arc::new(device),
         queue: Arc::new(queue),
         limits,
-    };
+    })
+}
+
+pub fn get_or_init_gpu_context(state: &tauri::State<AppState>) -> Result<GpuContext, String> {
+    let mut context_lock = state.gpu_context.lock().unwrap();
+    if let Some(context) = &*context_lock {
+        return Ok(context.clone());
+    }
+    let new_context = init_gpu_context()?;
     *context_lock = Some(new_context.clone());
     Ok(new_context)
 }

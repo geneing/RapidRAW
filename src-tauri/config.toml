@@ -1,0 +1,5 @@
+[build]
+jobs = 16  # or however many CPU cores you have
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

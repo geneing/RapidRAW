@@ -5,6 +5,7 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod ai_processing;
+mod cli;
 mod comfyui_connector;
 mod culling;
 mod file_management;
@@ -182,11 +183,11 @@ pub enum WatermarkAnchor {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WatermarkSettings {
-    path: String,
-    anchor: WatermarkAnchor,
-    scale: f32,
-    spacing: f32,
-    opacity: f32,
+    pub path: String,
+    pub anchor: WatermarkAnchor,
+    pub scale: f32,
+    pub spacing: f32,
+    pub opacity: f32,
 }
 
 #[derive(serde::Serialize)]
@@ -195,7 +196,7 @@ struct ImageDimensions {
     height: u32,
 }
 
-fn apply_all_transformations(
+pub fn apply_all_transformations(
     image: &DynamicImage,
     adjustments: &serde_json::Value,
 ) -> (DynamicImage, (f32, f32)) {
@@ -221,7 +222,7 @@ fn apply_all_transformations(
     (cropped_image, unscaled_crop_offset)
 }
 
-fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
+pub fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
     let mut hasher = DefaultHasher::new();
 
     let orientation_steps = adjustments["orientationSteps"].as_u64().unwrap_or(0);
@@ -296,7 +297,7 @@ fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
     hasher.finish()
 }
 
-fn calculate_full_job_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
+pub fn calculate_full_job_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
     let mut hasher = DefaultHasher::new();
     path.hash(&mut hasher);
     adjustments.to_string().hash(&mut hasher);
@@ -465,7 +466,7 @@ fn cancel_thumbnail_generation(state: tauri::State<AppState>) -> Result<(), Stri
     Ok(())
 }
 
-fn apply_watermark(
+pub fn apply_watermark(
     base_image: &mut DynamicImage,
     watermark_settings: &WatermarkSettings,
 ) -> Result<(), String> {
@@ -958,7 +959,7 @@ fn process_image_for_export(
     Ok(final_image)
 }
 
-fn encode_image_to_bytes(
+pub fn encode_image_to_bytes(
     image: &DynamicImage,
     output_format: &str,
     jpeg_quality: u8,
@@ -1559,7 +1560,7 @@ async fn estimate_batch_export_size(
     Ok(single_image_extrapolated_size * paths.len())
 }
 
-fn write_image_with_metadata(
+pub fn write_image_with_metadata(
     image_bytes: &mut Vec<u8>,
     original_path_str: &str,
     output_format: &str,
@@ -2666,6 +2667,22 @@ fn frontend_ready(app_handle: tauri::AppHandle, state: tauri::State<AppState>) -
 }
 
 fn main() {
+    // Check for CLI mode before initializing Tauri
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(cli_opts) = cli::parse_cli_args(args) {
+        if let Err(e) = cli::setup_cli_logging(cli_opts.verbose) {
+            eprintln!("Failed to setup logging: {}", e);
+            std::process::exit(1);
+        }
+        
+        if let Err(e) = cli::run_cli_processor(cli_opts) {
+            eprintln!("CLI processing failed: {}", e);
+            log::error!("CLI processing failed: {}", e);
+            std::process::exit(1);
+        }
+        std::process::exit(0);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             log::info!("New instance launched with args: {:?}. Focusing main window.", argv);
