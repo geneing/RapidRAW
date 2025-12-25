@@ -11,7 +11,7 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::formats::is_supported_image_file;
-use crate::gpu_processing::init_gpu_context;
+use crate::gpu_processing::{init_gpu_context, process_image_gpu_cli};
 use crate::image_loader::load_base_image_from_bytes;
 use crate::image_processing::{
     get_all_adjustments_from_json, apply_cpu_default_raw_processing,
@@ -169,15 +169,6 @@ fn get_process_memory_mb() -> Option<f64> {
 }
 
 /// Log metrics to CSV
-fn log_metrics_to_csv(
-    writer: &mut Writer<std::fs::File>,
-    metrics: &ProcessingMetrics,
-) -> Result<(), String> {
-    writer
-        .serialize(metrics)
-        .map_err(|e| format!("Failed to write CSV: {}", e))?;
-    Ok(())
-}
 
 /// Generate output filename with _processed suffix
 fn generate_output_filename(original_path: &Path) -> String {
@@ -185,12 +176,10 @@ fn generate_output_filename(original_path: &Path) -> String {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("image");
-    let extension = original_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("jpg");
-
-    format!("{}_{}.{}", stem, "processed", extension)
+    
+    // Always output as JPG for CLI processing, regardless of input format
+    // RAW input formats cannot be used as output formats
+    format!("{}_{}.jpg", stem, "processed")
 }
 
 /// Process a single image file
@@ -201,6 +190,7 @@ fn process_single_image(
     use_gpu: bool,
     gpu_context: Option<&GpuContext>,
     lut_cache: &mut HashMap<String, Arc<Lut>>,
+    csv_writer: &mut Writer<fs::File>,
 ) -> Result<(), String> {
     let file_name = image_path
         .file_name()
@@ -249,7 +239,8 @@ fn process_single_image(
         cpu_mem,
         gpu_mem,
         gpu_load,
-    );
+        csv_writer,
+    )?;
 
     // Step 2: Load and apply metadata
     let step_timer = Instant::now();
@@ -267,7 +258,8 @@ fn process_single_image(
         cpu_mem,
         gpu_mem,
         gpu_load,
-    );
+        csv_writer,
+    )?;
 
     // Step 3: Apply transformations
     let step_timer = Instant::now();
@@ -287,18 +279,20 @@ fn process_single_image(
         cpu_mem,
         gpu_mem,
         gpu_load,
-    );
+        csv_writer,
+    )?;
 
     let (img_w, img_h) = transformed_image.dimensions();
 
     // Step 4: GPU Processing (if enabled)
     let step_timer = Instant::now();
+    
     let mask_definitions: Vec<MaskDefinition> = adjustments
         .get("masks")
         .and_then(|m| serde_json::from_value(m.clone()).ok())
         .unwrap_or_else(Vec::new);
 
-    let _mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
+    let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
         .iter()
         .filter_map(|def| generate_mask_bitmap(def, img_w, img_h, 1.0, unscaled_crop_offset))
         .collect();
@@ -307,7 +301,7 @@ fn process_single_image(
     all_adjustments.global.show_clipping = 0;
 
     let lut_path = adjustments["lutPath"].as_str();
-    let _lut = if let Some(lp) = lut_path {
+    let lut = if let Some(lp) = lut_path {
         if !lut_cache.contains_key(lp) {
             if let Ok(loaded_lut) = crate::lut_processing::parse_lut_file(lp) {
                 lut_cache.insert(lp.to_string(), Arc::new(loaded_lut));
@@ -320,11 +314,26 @@ fn process_single_image(
 
     let _unique_hash = calculate_full_job_hash(&source_path_str, &adjustments);
 
+    // Apply GPU processing if enabled, otherwise use transformed image
     let final_image = if use_gpu && gpu_context.is_some() {
-        log::warn!("GPU processing requested but not available in CLI mode. Using CPU processing.");
-        transformed_image
+        match process_image_gpu_cli(
+            gpu_context.unwrap(),
+            &transformed_image,
+            all_adjustments,
+            &mask_bitmaps,
+            lut,
+        ) {
+            Ok(gpu_processed) => {
+                log::info!("GPU processing completed successfully");
+                gpu_processed
+            }
+            Err(e) => {
+                log::warn!("GPU processing failed ({}), using CPU-processed image", e);
+                transformed_image.clone()
+            }
+        }
     } else {
-        transformed_image
+        transformed_image.clone()
     };
 
     let elapsed = step_timer.elapsed().as_millis();
@@ -336,7 +345,8 @@ fn process_single_image(
         cpu_mem,
         gpu_mem,
         gpu_load,
-    );
+        csv_writer,
+    )?;
 
     // Step 5: Export
     let step_timer = Instant::now();
@@ -369,7 +379,8 @@ fn process_single_image(
         cpu_mem,
         gpu_mem,
         gpu_load,
-    );
+        csv_writer,
+    )?;
 
     let total_elapsed = batch_start.elapsed().as_millis();
     eprintln!(
@@ -381,7 +392,7 @@ fn process_single_image(
     Ok(())
 }
 
-/// Log timing information to stderr for human readability
+/// Log timing information to CSV and stderr
 fn log_step_timing(
     filename: &str,
     step: &str,
@@ -389,17 +400,31 @@ fn log_step_timing(
     cpu_mem: f64,
     gpu_mem: f64,
     gpu_load: f64,
-) {
+    csv_writer: &mut Writer<fs::File>,
+) -> Result<(), String> {
     eprintln!(
         "  {} - {} elapsed: {}ms (CPU: {:.1}MB, GPU: {:.1}MB, Load: {:.1}%)",
         filename, step, elapsed_ms, cpu_mem, gpu_mem, gpu_load
     );
+    
+    let metrics = ProcessingMetrics {
+        filename: filename.to_string(),
+        step_name: step.to_string(),
+        elapsed_ms,
+        cpu_memory_mb: cpu_mem,
+        gpu_memory_mb: gpu_mem,
+        gpu_load_pct: gpu_load,
+    };
+    
+    csv_writer
+        .serialize(metrics)
+        .map_err(|e| format!("Failed to write CSV record: {}", e))?;
+    
+    Ok(())
 }
 
 /// Main CLI processor entry point
 pub fn run_cli_processor(opts: CliOptions) -> Result<(), String> {
-    setup_cli_logging(opts.verbose)?;
-
     log::info!(
         "Starting CLI processor: input={}, output={}, gpu={}, verbose={}",
         opts.input_dir.display(),
@@ -444,6 +469,7 @@ pub fn run_cli_processor(opts: CliOptions) -> Result<(), String> {
             opts.use_gpu,
             gpu_context.as_ref(),
             &mut lut_cache,
+            &mut csv_writer,
         )?;
     }
 

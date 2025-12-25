@@ -78,8 +78,20 @@ codegen-units = 256     # Higher = faster linking (at cost of worse optimization
 split-debuginfo = "packed"  # Smaller debug info on Windows
 
 [profile.release]
-codegen-units = 1
-lto = true
-strip = true
+opt-level = 3           # Maximum optimization level
+codegen-units = 1       # Full LTO optimization (slower compilation, best runtime performance)
+lto = true              # Link-time optimization enabled
+strip = true            # Strip symbols for smaller binary
+panic = "abort"         # Faster panic handling (smaller binary)
+debug = false           # No debug info in release
 
+[profile.profiling]
+inherits = "dev"
+opt-level = 3           # Maximum optimization level
+codegen-units = 1       # Full LTO optimization (slower compilation, best runtime performance)
+lto = true              # Link-time optimization enabled
+strip = false            # Strip symbols for smaller binary
+panic = "abort"         # Faster panic handling (smaller binary)
+debug = true           # No debug info in release
 
+split-debuginfo = "packed"  # Smaller debug info on Windows

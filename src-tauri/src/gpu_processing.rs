@@ -12,7 +12,11 @@ use crate::{AppState, GpuImageCache};
 
 /// Initialize GPU context without requiring AppState. Used by both Tauri and CLI modes.
 pub fn init_gpu_context() -> Result<GpuContext, String> {
-    let instance_desc = wgpu::InstanceDescriptor::from_env_or_default();
+    let mut instance_desc = wgpu::InstanceDescriptor::from_env_or_default();
+    #[cfg(debug_assertions)]
+    {
+        instance_desc.flags |= wgpu::InstanceFlags::VALIDATION | wgpu::InstanceFlags::DEBUG;
+    }
     let instance = wgpu::Instance::new(&instance_desc);
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -27,8 +31,43 @@ pub fn init_gpu_context() -> Result<GpuContext, String> {
     {
         required_features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
     }
+    #[cfg(debug_assertions)]
+    {
+        let adapter_features = adapter.features();
+        if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
+        if adapter_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES) {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES;
+        }
+    }
 
     let limits = adapter.limits();
+    let trace = if cfg!(debug_assertions) {
+        #[cfg(feature = "trace")]
+        {
+            match std::env::var("RAPIDRAW_WGPU_TRACE_DIR") {
+                Ok(dir) if !dir.is_empty() => {
+                    if let Err(err) = std::fs::create_dir_all(&dir) {
+                        log::warn!("Failed to create wgpu trace dir {}: {}", dir, err);
+                        wgpu::Trace::Off
+                    } else {
+                        wgpu::Trace::Directory(dir.into())
+                    }
+                }
+                _ => wgpu::Trace::Off,
+            }
+        }
+        #[cfg(not(feature = "trace"))]
+        {
+            if std::env::var("RAPIDRAW_WGPU_TRACE_DIR").is_ok() {
+                log::warn!("RAPIDRAW_WGPU_TRACE_DIR set but wgpu \"trace\" feature is disabled");
+            }
+            wgpu::Trace::Off
+        }
+    } else {
+        wgpu::Trace::Off
+    };
 
     let (device, queue) = pollster::block_on(adapter.request_device(
         &wgpu::DeviceDescriptor {
@@ -37,7 +76,7 @@ pub fn init_gpu_context() -> Result<GpuContext, String> {
             required_limits: limits.clone(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
+            trace,
         },
     ))
     .map_err(|e| e.to_string())?;
@@ -140,7 +179,143 @@ struct BlurParams {
     radius: u32,
     tile_offset_x: u32,
     tile_offset_y: u32,
-    _pad: u32,
+    tile_width: u32,
+    tile_height: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+#[cfg(debug_assertions)]
+struct GpuTimingRecord {
+    label: String,
+    start: u32,
+    end: u32,
+}
+
+#[cfg(debug_assertions)]
+struct GpuProfiler {
+    query_set: wgpu::QuerySet,
+    resolve_buffer: wgpu::Buffer,
+    readback_buffer: wgpu::Buffer,
+    timestamp_period: f32,
+    next_query: u32,
+    records: Vec<GpuTimingRecord>,
+}
+
+#[cfg(debug_assertions)]
+impl GpuProfiler {
+    fn new(device: &wgpu::Device, timestamp_period: f32, query_count: u32) -> Self {
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("GPU Timing Query Set"),
+            ty: wgpu::QueryType::Timestamp,
+            count: query_count,
+        });
+        let buffer_size = (query_count as u64) * std::mem::size_of::<u64>() as u64;
+        let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Timing Resolve Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Timing Readback Buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        Self {
+            query_set,
+            resolve_buffer,
+            readback_buffer,
+            timestamp_period,
+            next_query: 0,
+            records: Vec::new(),
+        }
+    }
+
+    fn write_timestamp(&mut self, pass: &mut wgpu::ComputePass) -> u32 {
+        let index = self.next_query;
+        pass.write_timestamp(&self.query_set, index);
+        self.next_query += 1;
+        index
+    }
+
+    fn record(&mut self, label: String, start: u32, end: u32) {
+        self.records.push(GpuTimingRecord { label, start, end });
+    }
+
+    fn resolve_and_log(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.next_query == 0 {
+            return;
+        }
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("GPU Timing Resolve Encoder"),
+        });
+        encoder.resolve_query_set(
+            &self.query_set,
+            0..self.next_query,
+            &self.resolve_buffer,
+            0,
+        );
+        let byte_count = (self.next_query as u64) * std::mem::size_of::<u64>() as u64;
+        encoder.copy_buffer_to_buffer(&self.resolve_buffer, 0, &self.readback_buffer, 0, byte_count);
+        queue.submit(Some(encoder.finish()));
+
+        let buffer_slice = self.readback_buffer.slice(..byte_count);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(60)),
+            })
+            .unwrap();
+        if let Err(err) = rx.recv().unwrap() {
+            log::warn!("GPU timing readback failed: {}", err);
+            self.readback_buffer.unmap();
+            return;
+        }
+
+        let data = buffer_slice.get_mapped_range();
+        let mut timestamps = Vec::with_capacity(self.next_query as usize);
+        for chunk in data.chunks_exact(8) {
+            timestamps.push(u64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        drop(data);
+        self.readback_buffer.unmap();
+
+        let period_ns = self.timestamp_period as f64;
+        for record in &self.records {
+            let start = timestamps.get(record.start as usize).copied().unwrap_or(0);
+            let end = timestamps.get(record.end as usize).copied().unwrap_or(0);
+            if end > start {
+                let duration_ns = (end - start) as f64 * period_ns;
+                log::debug!("GPU timing {}: {:.3} us", record.label, duration_ns / 1000.0);
+            }
+        }
+    }
+}
+
+#[cfg(not(debug_assertions))]
+struct GpuProfiler;
+
+#[cfg(not(debug_assertions))]
+impl GpuProfiler {
+    fn new(_device: &wgpu::Device, _timestamp_period: f32, _query_count: u32) -> Self {
+        Self
+    }
+
+    fn write_timestamp(&mut self, _pass: &mut wgpu::ComputePass) -> u32 {
+        0
+    }
+
+    fn record(&mut self, _label: String, _start: u32, _end: u32) {}
+
+    fn resolve_and_log(&self, _device: &wgpu::Device, _queue: &wgpu::Queue) {}
 }
 
 struct GpuProcessor<'a> {
@@ -494,6 +669,13 @@ impl<'a> GpuProcessor<'a> {
         let queue = &self.context.queue;
         let scale = (width.min(height) as f32) / 1080.0;
         const MAX_MASKS: u32 = 11;
+        let profiling_enabled = cfg!(debug_assertions)
+            && device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY)
+            && device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
 
         const TILE_SIZE: u32 = 2048;
         const TILE_OVERLAP: u32 = 128;
@@ -558,6 +740,15 @@ impl<'a> GpuProcessor<'a> {
 
         for tile_y in 0..tiles_y {
             for tile_x in 0..tiles_x {
+                let mut tile_profiler = if profiling_enabled {
+                    Some(GpuProfiler::new(
+                        device,
+                        queue.get_timestamp_period(),
+                        16,
+                    ))
+                } else {
+                    None
+                };
                 let x_start = tile_x * TILE_SIZE;
                 let y_start = tile_y * TILE_SIZE;
                 let tile_width = (width - x_start).min(TILE_SIZE);
@@ -576,8 +767,13 @@ impl<'a> GpuProcessor<'a> {
                     depth_or_array_layers: 1,
                 };
 
-                let create_blur =
-                    |base_radius: f32, output_view: &wgpu::TextureView| -> bool {
+                let create_blur = |label: &str,
+                                   base_radius: f32,
+                                   output_view: &wgpu::TextureView,
+                                   profiler: &mut Option<GpuProfiler>|
+                 -> bool {
+                        #[cfg(not(debug_assertions))]
+                        let _ = label;
                         let radius = (base_radius * scale).ceil().max(1.0) as u32;
                         if radius == 0 {
                             return false;
@@ -587,11 +783,17 @@ impl<'a> GpuProcessor<'a> {
                             radius,
                             tile_offset_x: input_x_start,
                             tile_offset_y: input_y_start,
-                            _pad: 0,
+                            tile_width: input_width,
+                            tile_height: input_height,
+                            _pad0: 0,
+                            _pad1: 0,
+                            _pad2: 0,
                         };
                         queue.write_buffer(&self.blur_params_buffer, 0, bytemuck::bytes_of(&params));
 
-                        let mut encoder = device.create_command_encoder(&Default::default());
+                        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("Blur Encoder"),
+                        });
 
                         let h_blur_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("H-Blur BG"),
@@ -614,12 +816,30 @@ impl<'a> GpuProcessor<'a> {
                             ],
                         });
 
+                        #[cfg(debug_assertions)]
+                        encoder.push_debug_group("horizontal_blur");
                         {
-                            let mut cpass = encoder.begin_compute_pass(&Default::default());
+                            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                label: Some("Horizontal Blur Pass"),
+                                ..Default::default()
+                            });
                             cpass.set_pipeline(&self.h_blur_pipeline);
                             cpass.set_bind_group(0, &h_blur_bg, &[]);
+                            #[cfg(debug_assertions)]
+                            let start = profiler.as_mut().map(|p| p.write_timestamp(&mut cpass));
                             cpass.dispatch_workgroups((input_width + 255) / 256, input_height, 1);
+                            #[cfg(debug_assertions)]
+                            if let Some((p, start)) = profiler.as_mut().zip(start) {
+                                let end = p.write_timestamp(&mut cpass);
+                                p.record(
+                                    format!("tile({},{})/{}/horizontal_blur", tile_x, tile_y, label),
+                                    start,
+                                    end,
+                                );
+                            }
                         }
+                        #[cfg(debug_assertions)]
+                        encoder.pop_debug_group();
 
                         let v_blur_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                             label: Some("V-Blur BG"),
@@ -640,20 +860,41 @@ impl<'a> GpuProcessor<'a> {
                             ],
                         });
 
+                        #[cfg(debug_assertions)]
+                        encoder.push_debug_group("vertical_blur");
                         {
-                            let mut cpass = encoder.begin_compute_pass(&Default::default());
+                            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                                label: Some("Vertical Blur Pass"),
+                                ..Default::default()
+                            });
                             cpass.set_pipeline(&self.v_blur_pipeline);
                             cpass.set_bind_group(0, &v_blur_bg, &[]);
+                            #[cfg(debug_assertions)]
+                            let start = profiler.as_mut().map(|p| p.write_timestamp(&mut cpass));
                             cpass.dispatch_workgroups(input_width, (input_height + 255) / 256, 1);
+                            #[cfg(debug_assertions)]
+                            if let Some((p, start)) = profiler.as_mut().zip(start) {
+                                let end = p.write_timestamp(&mut cpass);
+                                p.record(
+                                    format!("tile({},{})/{}/vertical_blur", tile_x, tile_y, label),
+                                    start,
+                                    end,
+                                );
+                            }
                         }
+                        #[cfg(debug_assertions)]
+                        encoder.pop_debug_group();
 
                         queue.submit(Some(encoder.finish()));
                         true
                     };
 
-                let did_create_sharpness_blur = create_blur(2.0, &sharpness_blur_view);
-                let did_create_clarity_blur = create_blur(8.0, &clarity_blur_view);
-                let did_create_structure_blur = create_blur(40.0, &structure_blur_view);
+                let did_create_sharpness_blur =
+                    create_blur("sharpness", 2.0, &sharpness_blur_view, &mut tile_profiler);
+                let did_create_clarity_blur =
+                    create_blur("clarity", 8.0, &clarity_blur_view, &mut tile_profiler);
+                let did_create_structure_blur =
+                    create_blur("structure", 40.0, &structure_blur_view, &mut tile_profiler);
 
                 let mut tile_adjustments = adjustments;
                 tile_adjustments.tile_offset_x = input_x_start;
@@ -724,18 +965,45 @@ impl<'a> GpuProcessor<'a> {
                     entries: &bind_group_entries,
                 });
 
-                let mut encoder = device.create_command_encoder(&Default::default());
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Main Compute Encoder"),
+                });
+                #[cfg(debug_assertions)]
+                encoder.push_debug_group("main_compute");
                 {
-                    let mut compute_pass = encoder.begin_compute_pass(&Default::default());
+                    let mut compute_pass =
+                        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                            label: Some("Main Compute Pass"),
+                            ..Default::default()
+                        });
                     compute_pass.set_pipeline(&self.main_pipeline);
                     compute_pass.set_bind_group(0, &bind_group, &[]);
+                    #[cfg(debug_assertions)]
+                    let start = tile_profiler
+                        .as_mut()
+                        .map(|p| p.write_timestamp(&mut compute_pass));
                     compute_pass.dispatch_workgroups(
                         (input_width + 7) / 8,
                         (input_height + 7) / 8,
                         1,
                     );
+                    #[cfg(debug_assertions)]
+                    if let Some((p, start)) = tile_profiler.as_mut().zip(start) {
+                        let end = p.write_timestamp(&mut compute_pass);
+                        p.record(
+                            format!("tile({},{})/main_compute", tile_x, tile_y),
+                            start,
+                            end,
+                        );
+                    }
                 }
+                #[cfg(debug_assertions)]
+                encoder.pop_debug_group();
                 queue.submit(Some(encoder.finish()));
+
+                if let Some(profiler) = tile_profiler.as_ref() {
+                    profiler.resolve_and_log(device, queue);
+                }
 
                 let processed_tile_data =
                     read_texture_data(device, queue, &output_texture, input_texture_size)?;
@@ -791,6 +1059,75 @@ pub fn run_gpu_processing(
         duration
     );
     Ok(final_pixels)
+}
+
+/// CLI-friendly GPU processing that doesn't require Tauri state
+pub fn process_image_gpu_cli(
+    context: &GpuContext,
+    base_image: &DynamicImage,
+    all_adjustments: AllAdjustments,
+    mask_bitmaps: &[ImageBuffer<Luma<u8>, Vec<u8>>],
+    lut: Option<Arc<Lut>>,
+) -> Result<DynamicImage, String> {
+    let (width, height) = base_image.dimensions();
+    log::info!(
+        "[CLI] GPU processing called for {}x{} image.",
+        width,
+        height
+    );
+    let device = &context.device;
+    let queue = &context.queue;
+
+    let max_dim = context.limits.max_texture_dimension_2d;
+    if width > max_dim || height > max_dim {
+        log::warn!(
+            "Image dimensions ({}x{}) exceed GPU limits ({}). Bypassing GPU processing and returning unprocessed image to prevent a crash. Try upgrading your GPU :)",
+            width,
+            height,
+            max_dim
+        );
+        return Ok(base_image.clone());
+    }
+
+    // Convert image to GPU-compatible format
+    let img_rgba_f16 = to_rgba_f16(base_image);
+    let texture_size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture_with_data(
+        queue,
+        &wgpu::TextureDescriptor {
+            label: Some("CLI Input Texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        },
+        TextureDataOrder::MipMajor,
+        bytemuck::cast_slice(&img_rgba_f16),
+    );
+    let texture_view = texture.create_view(&Default::default());
+
+    // Run GPU processing
+    let processed_pixels = run_gpu_processing(
+        context,
+        &texture_view,
+        width,
+        height,
+        all_adjustments,
+        mask_bitmaps,
+        lut,
+    )?;
+
+    // Convert result back to DynamicImage
+    let img_buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, processed_pixels)
+        .ok_or("Failed to create image buffer from GPU data")?;
+    Ok(DynamicImage::ImageRgba8(img_buf))
 }
 
 pub fn process_and_get_dynamic_image(

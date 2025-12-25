@@ -1,3 +1,7 @@
+// Main image processing shader.
+// Data layouts mirror Rust side uniforms; padding keeps alignment stable.
+
+// Control point for curve interpolation (0-255 space).
 struct Point {
     x: f32,
     y: f32,
@@ -5,6 +9,7 @@ struct Point {
     _pad2: f32,
 }
 
+// HSL adjustments per color range (hue shift, sat, lum).
 struct HslColor {
     hue: f32,
     saturation: f32,
@@ -12,6 +17,7 @@ struct HslColor {
     _pad: f32,
 }
 
+// Lift/Gamma/Gain style adjustments per tonal range.
 struct ColorGradeSettings {
     hue: f32,
     saturation: f32,
@@ -19,6 +25,7 @@ struct ColorGradeSettings {
     _pad: f32,
 }
 
+// Per-channel hue and saturation calibration + shadow tint.
 struct ColorCalibrationSettings {
     shadows_tint: f32,
     red_hue: f32,
@@ -30,6 +37,7 @@ struct ColorCalibrationSettings {
     _pad1: f32,
 }
 
+// Global adjustments applied to the full image.
 struct GlobalAdjustments {
     exposure: f32,
     brightness: f32,
@@ -116,6 +124,7 @@ struct GlobalAdjustments {
     _pad_end4: f32,
 }
 
+// Mask-local adjustments applied after global corrections.
 struct MaskAdjustments {
     exposure: f32,
     brightness: f32,
@@ -167,6 +176,7 @@ struct MaskAdjustments {
     _pad_end7: f32,
 }
 
+// Aggregated uniforms: global + per-mask + tile offsets for tiled dispatch.
 struct AllAdjustments {
     global: GlobalAdjustments,
     mask_adjustments: array<MaskAdjustments, 11>,
@@ -176,11 +186,13 @@ struct AllAdjustments {
     mask_atlas_cols: u32,
 }
 
+// HSL panel definitions (center hue and width in degrees).
 struct HslRange {
     center: f32,
     width: f32,
 }
 
+// HSL ranges in degrees for UI buckets.
 const HSL_RANGES: array<HslRange, 8> = array<HslRange, 8>(
     HslRange(358.0, 35.0),  // Red
     HslRange(25.0, 45.0),   // Orange
@@ -192,10 +204,12 @@ const HSL_RANGES: array<HslRange, 8> = array<HslRange, 8>(
     HslRange(330.0, 50.0)   // Magenta
 );
 
+// Bindings: full-res linear/RAW input, output storage, and uniform block.
 @group(0) @binding(0) var input_texture: texture_2d<f32>;
 @group(0) @binding(1) var output_texture: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> adjustments: AllAdjustments;
 
+// Per-mask textures (single-channel masks in [0,1]).
 @group(0) @binding(3) var mask0: texture_2d<f32>;
 @group(0) @binding(4) var mask1: texture_2d<f32>;
 @group(0) @binding(5) var mask2: texture_2d<f32>;
@@ -208,19 +222,24 @@ const HSL_RANGES: array<HslRange, 8> = array<HslRange, 8>(
 @group(0) @binding(12) var mask9: texture_2d<f32>;
 @group(0) @binding(13) var mask10: texture_2d<f32>;
 
+// 3D LUT and sampler for creative looks.
 @group(0) @binding(14) var lut_texture: texture_3d<f32>;
 @group(0) @binding(15) var lut_sampler: sampler;
 
+// Precomputed blur textures for local contrast (unsharp-mask style).
 @group(0) @binding(16) var sharpness_blur_texture: texture_2d<f32>;
 @group(0) @binding(17) var clarity_blur_texture: texture_2d<f32>;
 @group(0) @binding(18) var structure_blur_texture: texture_2d<f32>;
 
+// ITU-R BT.709 luma coefficients.
 const LUMA_COEFF = vec3<f32>(0.2126, 0.7152, 0.0722);
 
+// Luminance helper.
 fn get_luma(c: vec3<f32>) -> f32 {
     return dot(c, LUMA_COEFF);
 }
 
+// sRGB <-> linear conversions for non-RAW images.
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let cutoff = vec3<f32>(0.04045);
     let a = vec3<f32>(0.055);
@@ -238,6 +257,7 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(higher, lower, c_clamped <= cutoff);
 }
 
+// HSV is used for selective saturation and hue-based adjustments.
 fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
     let c_max = max(c.r, max(c.g, c.b));
     let c_min = min(c.r, min(c.g, c.b));
@@ -268,6 +288,7 @@ fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
     return rgb_prime + vec3<f32>(m, m, m);
 }
 
+// Soft radial falloff for HSL range influence.
 fn get_raw_hsl_influence(hue: f32, range: HslRange) -> f32 {
     let dist = min(abs(hue - range.center), 360.0 - abs(hue - range.center));
     const sharpness = 1.5; 
@@ -275,6 +296,7 @@ fn get_raw_hsl_influence(hue: f32, range: HslRange) -> f32 {
     return exp(-sharpness * falloff * falloff);
 }
 
+// Hash and noise helpers for grain.
 fn hash(p: vec2<f32>) -> f32 {
     var p_mut = p * mat2x2<f32>(vec2<f32>(127.1, 311.7), vec2<f32>(269.5, 183.3));
     return fract(sin(p_mut.x + p_mut.y) * 43758.5453123);
@@ -298,11 +320,13 @@ fn gradient_noise(p: vec2<f32>) -> f32 {
     return final_interp;
 }
 
+// Blue-noise-like dithering in 8-bit output space.
 fn dither(coords: vec2<u32>) -> f32 {
     let p = vec2<f32>(coords);
     return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453) - 0.5;
 }
 
+// Cubic Hermite interpolation for curves.
 fn interpolate_cubic_hermite(x: f32, p1: Point, p2: Point, m1: f32, m2: f32) -> f32 {
     let dx = p2.x - p1.x;
     if (dx <= 0.0) { return p1.y; }
@@ -316,6 +340,7 @@ fn interpolate_cubic_hermite(x: f32, p1: Point, p2: Point, m1: f32, m2: f32) -> 
     return h00 * p1.y + h10 * m1 * dx + h01 * p2.y + h11 * m2 * dx;
 }
 
+// Apply a 16-point curve in 0-255 input space.
 fn apply_curve(val: f32, points: array<Point, 16>, count: u32) -> f32 {
     if (count < 2u) { return val; }
     var local_points = points;
@@ -356,6 +381,7 @@ fn apply_curve(val: f32, points: array<Point, 16>, count: u32) -> f32 {
     return local_points[count - 1u].y / 255.0;
 }
 
+// Contrast, shadows, whites, blacks in linear space with tone-aware masks.
 fn apply_tonal_adjustments(color: vec3<f32>, con: f32, sh: f32, wh: f32, bl: f32) -> vec3<f32> {
     var rgb = color;
     if (wh != 0.0) {
@@ -399,6 +425,7 @@ fn apply_tonal_adjustments(color: vec3<f32>, con: f32, sh: f32, wh: f32, bl: f32
     return rgb;
 }
 
+// Exposure in linear space (stops).
 fn apply_linear_exposure(color_in: vec3<f32>, exposure_adj: f32) -> vec3<f32> {
     if (exposure_adj == 0.0) {
         return color_in;
@@ -406,6 +433,7 @@ fn apply_linear_exposure(color_in: vec3<f32>, exposure_adj: f32) -> vec3<f32> {
     return color_in * pow(2.0, exposure_adj);
 }
 
+// Filmic brightness shaping to preserve highlights.
 fn apply_filmic_exposure(color_in: vec3<f32>, brightness_adj: f32) -> vec3<f32> {
     if (brightness_adj == 0.0) {
         return color_in;
@@ -432,6 +460,7 @@ fn apply_filmic_exposure(color_in: vec3<f32>, brightness_adj: f32) -> vec3<f32> 
     return vec3<f32>(new_luma) + chroma * chroma_scale;
 }
 
+// Highlight rolloff and recovery with tone-aware mask.
 fn apply_highlights_adjustment(
     color_in: vec3<f32>, 
     highlights_adj: f32,
@@ -474,6 +503,7 @@ fn apply_highlights_adjustment(
     return mix(color_in, final_adjusted_color, highlight_mask);
 }
 
+// Channel hue shifts and saturation scaling.
 fn apply_color_calibration(color: vec3<f32>, cal: ColorCalibrationSettings) -> vec3<f32> {
     let h_r = cal.red_hue;
     let h_g = cal.green_hue;
@@ -512,6 +542,7 @@ fn apply_color_calibration(color: vec3<f32>, cal: ColorCalibrationSettings) -> v
     return c;
 }
 
+// Temperature/tint balance in linear RGB.
 fn apply_white_balance(color: vec3<f32>, temp: f32, tnt: f32) -> vec3<f32> {
     var rgb = color;
     let temp_kelvin_mult = vec3<f32>(1.0 + temp * 0.2, 1.0 + temp * 0.05, 1.0 - temp * 0.2);
@@ -520,6 +551,7 @@ fn apply_white_balance(color: vec3<f32>, temp: f32, tnt: f32) -> vec3<f32> {
     return rgb;
 }
 
+// Saturation and vibrance (skin-protecting on positive vibrance).
 fn apply_creative_color(color: vec3<f32>, sat: f32, vib: f32) -> vec3<f32> {
     var processed = color;
     let luma = get_luma(processed);
@@ -553,6 +585,7 @@ fn apply_creative_color(color: vec3<f32>, sat: f32, vib: f32) -> vec3<f32> {
     return processed;
 }
 
+// HSL panel: hue, saturation, luminance per color bucket.
 fn apply_hsl_panel(color: vec3<f32>, hsl_adjustments: array<HslColor, 8>, coords_i: vec2<i32>) -> vec3<f32> {
     if (distance(color.r, color.g) < 0.001 && distance(color.g, color.b) < 0.001) {
         return color;
@@ -757,6 +790,7 @@ fn apply_dehaze(color: vec3<f32>, amount: f32) -> vec3<f32> {
     }
 }
 
+// Simple spatial NR with luma/color similarity thresholds.
 fn apply_noise_reduction(color: vec3<f32>, coords_i: vec2<i32>, luma_amount: f32, color_amount: f32, scale: f32) -> vec3<f32> {
     if (luma_amount <= 100.0 && color_amount <= 100.0) { return color; } // temporarily disable NR for now
     
@@ -791,6 +825,7 @@ fn apply_noise_reduction(color: vec3<f32>, coords_i: vec2<i32>, luma_amount: f32
     return color;
 }
 
+// Chromatic aberration correction by channel-specific radial shifts.
 fn apply_ca_correction(coords: vec2<u32>, ca_rc: f32, ca_by: f32) -> vec3<f32> {
     let dims = vec2<f32>(textureDimensions(input_texture));
     let center = dims / 2.0;
@@ -821,6 +856,7 @@ fn apply_ca_correction(coords: vec2<u32>, ca_rc: f32, ca_by: f32) -> vec3<f32> {
     return vec3<f32>(r, g, b);
 }
 
+// AgX tonemapper constants and helpers.
 const AGX_EPSILON: f32 = 1.0e-6;
 const AGX_MIN_EV: f32 = -15.2;
 const AGX_MAX_EV: f32 = 5.0;
@@ -859,6 +895,7 @@ fn agx_apply_curve_channel(x: f32) -> f32 {
     return clamp(result, AGX_TARGET_BLACK_PRE_GAMMA, AGX_TARGET_WHITE_PRE_GAMMA);
 }
 
+// Gamut compression before AgX curve to keep values in-range.
 fn agx_compress_gamut(c: vec3<f32>) -> vec3<f32> {
     let min_c = min(c.r, min(c.g, c.b));
     if (min_c < 0.0) {
@@ -867,6 +904,7 @@ fn agx_compress_gamut(c: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
+// AgX tone curve in log-encoded space.
 fn agx_tonemap(c: vec3<f32>) -> vec3<f32> {
     let x_relative = max(c / 0.18, vec3<f32>(AGX_EPSILON));
     let log_encoded = (log2(x_relative) - AGX_MIN_EV) / AGX_RANGE_EV;
@@ -882,6 +920,7 @@ fn agx_tonemap(c: vec3<f32>) -> vec3<f32> {
     return final_color;
 }
 
+// Full AgX path: compress gamut, transform, tonemap, transform back.
 fn agx_full_transform(color_in: vec3<f32>) -> vec3<f32> {
     let compressed_color = agx_compress_gamut(color_in);
     let color_in_agx_space = adjustments.global.agx_pipe_to_rendering_matrix * compressed_color;
@@ -890,6 +929,7 @@ fn agx_full_transform(color_in: vec3<f32>) -> vec3<f32> {
     return final_color;
 }
 
+// Legacy filmic curve used when AgX is disabled.
 fn legacy_tonemap(c: vec3<f32>) -> vec3<f32> {
     const a: f32 = 2.51;
     const b: f32 = 0.03;
@@ -911,6 +951,7 @@ fn no_tonemap(c: vec3<f32>) -> vec3<f32> {
     return c;
 }
 
+// Curve helpers: treat identity curve as "off" for performance.
 fn is_default_curve(points: array<Point, 16>, count: u32) -> bool {
     if (count != 2u) {
         return false;
@@ -920,6 +961,7 @@ fn is_default_curve(points: array<Point, 16>, count: u32) -> bool {
     return abs(p0.y - 0.0) < 0.1 && abs(p1.y - 255.0) < 0.1;
 }
 
+// Apply RGB and luma curves with luma-preserving correction.
 fn apply_all_curves(color: vec3<f32>, luma_curve: array<Point, 16>, luma_curve_count: u32, red_curve: array<Point, 16>, red_curve_count: u32, green_curve: array<Point, 16>, green_curve_count: u32, blue_curve: array<Point, 16>, blue_curve_count: u32) -> vec3<f32> {
     let red_is_default = is_default_curve(red_curve, red_curve_count);
     let green_is_default = is_default_curve(green_curve, green_curve_count);
@@ -941,6 +983,7 @@ fn apply_all_curves(color: vec3<f32>, luma_curve: array<Point, 16>, luma_curve_c
     }
 }
 
+// Global adjustments chain (linear space).
 fn apply_all_adjustments(initial_rgb: vec3<f32>, adj: GlobalAdjustments, coords_i: vec2<i32>, id: vec2<u32>, scale: f32) -> vec3<f32> {
     var processed_rgb = apply_noise_reduction(initial_rgb, coords_i, adj.luma_noise_reduction, adj.color_noise_reduction, scale);
 
@@ -959,6 +1002,7 @@ fn apply_all_adjustments(initial_rgb: vec3<f32>, adj: GlobalAdjustments, coords_
     return processed_rgb;
 }
 
+// Mask-local adjustments chain; some controls are reduced vs global.
 fn apply_all_mask_adjustments(initial_rgb: vec3<f32>, adj: MaskAdjustments, coords_i: vec2<i32>, id: vec2<u32>, scale: f32, is_raw: u32, tonemapper_mode: u32) -> vec3<f32> {
     var processed_rgb = apply_noise_reduction(initial_rgb, coords_i, adj.luma_noise_reduction, adj.color_noise_reduction, scale);
 
@@ -976,6 +1020,7 @@ fn apply_all_mask_adjustments(initial_rgb: vec3<f32>, adj: MaskAdjustments, coor
     return processed_rgb;
 }
 
+// Read mask value by index.
 fn get_mask_influence(mask_index: u32, coords: vec2<u32>) -> f32 {
     switch (mask_index) {
         case 0u: { return textureLoad(mask0, coords, 0).r; }
@@ -993,19 +1038,23 @@ fn get_mask_influence(mask_index: u32, coords: vec2<u32>) -> f32 {
     }
 }
 
+// Main compute kernel: per-pixel adjustments, masking, curves, LUT, grain, vignette.
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let out_dims = vec2<u32>(textureDimensions(output_texture));
     if (id.x >= out_dims.x || id.y >= out_dims.y) { return; }
 
+    // Scale adjustment strengths based on the output resolution.
     const REFERENCE_DIMENSION: f32 = 1080.0;
     let full_dims = vec2<f32>(textureDimensions(input_texture));
     let current_ref_dim = min(full_dims.x, full_dims.y);
     let scale = max(0.1, current_ref_dim / REFERENCE_DIMENSION);
 
+    // Map tile-local output coords into the full input texture.
     let absolute_coord = id.xy + vec2<u32>(adjustments.tile_offset_x, adjustments.tile_offset_y);
     let absolute_coord_i = vec2<i32>(absolute_coord);
 
+    // Optional chromatic aberration correction.
     let ca_rc = adjustments.global.chromatic_aberration_red_cyan;
     let ca_by = adjustments.global.chromatic_aberration_blue_yellow;
     var color_from_texture = textureLoad(input_texture, absolute_coord, 0).rgb;
@@ -1014,6 +1063,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let original_alpha = textureLoad(input_texture, absolute_coord, 0).a;
 
+    // Input is linear for RAW, sRGB for non-RAW.
     var initial_linear_rgb: vec3<f32>;
     if (adjustments.global.is_raw_image == 0u) {
         initial_linear_rgb = srgb_to_linear(color_from_texture);
@@ -1021,6 +1071,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         initial_linear_rgb = color_from_texture;
     }
 
+    // Film negative conversion is applied before the rest of the pipeline.
     if (adjustments.global.enable_negative_conversion == 1u) {
         initial_linear_rgb = vec3<f32>(1.0) - initial_linear_rgb;
         let film_base_color = vec3<f32>(adjustments.global.film_base_r, adjustments.global.film_base_g, adjustments.global.film_base_b);
@@ -1030,6 +1081,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         initial_linear_rgb = max(initial_linear_rgb, vec3<f32>(0.0));
     }
 
+    // Local contrast uses blurred versions of the image.
     let sharpness_blurred = textureLoad(sharpness_blur_texture, id.xy, 0).rgb;
     let clarity_blurred = textureLoad(clarity_blur_texture, id.xy, 0).rgb;
     let structure_blurred = textureLoad(structure_blur_texture, id.xy, 0).rgb;
@@ -1040,6 +1092,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     locally_contrasted_rgb = apply_local_contrast(locally_contrasted_rgb, structure_blurred, adjustments.global.structure, adjustments.global.is_raw_image);
     locally_contrasted_rgb = apply_centre_local_contrast(locally_contrasted_rgb, adjustments.global.centre, absolute_coord_i, clarity_blurred, adjustments.global.is_raw_image);
 
+    // Exposure first, then tone/contrast shaping.
     var processed_rgb = apply_linear_exposure(locally_contrasted_rgb, adjustments.global.exposure);
 
     if (adjustments.global.is_raw_image == 1u && adjustments.global.tonemapper_mode != 1u) {
@@ -1069,6 +1122,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
+    // Tonemapper selection (AgX or linear->sRGB).
     var base_srgb: vec3<f32>;
     if (adjustments.global.tonemapper_mode == 1u) {
         base_srgb = agx_full_transform(composite_rgb_linear);
@@ -1076,6 +1130,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         base_srgb = linear_to_srgb(composite_rgb_linear);
     }
 
+    // Apply global curves, then mask curves.
     var final_rgb = apply_all_curves(base_srgb,
         adjustments.global.luma_curve, adjustments.global.luma_curve_count,
         adjustments.global.red_curve, adjustments.global.red_curve_count,
@@ -1096,11 +1151,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
+    // Apply creative LUT in output space.
     if (adjustments.global.has_lut == 1u) {
         let lut_color = textureSampleLevel(lut_texture, lut_sampler, final_rgb, 0.0).rgb;
         final_rgb = mix(final_rgb, lut_color, adjustments.global.lut_intensity);
     }
 
+    // Procedural grain, scaled by image size and luma.
     if (adjustments.global.grain_amount > 0.0) {
         let g = adjustments.global;
         let coord = vec2<f32>(absolute_coord_i);
@@ -1117,6 +1174,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         final_rgb += noise * amount * luma_mask;
     }
 
+    // Vignette in output space.
     let g = adjustments.global;
     if (g.vignette_amount != 0.0) {
         let full_dims_f = vec2<f32>(textureDimensions(input_texture));
@@ -1133,6 +1191,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         if (v_amount < 0.0) { final_rgb *= (1.0 + v_amount * vignette_mask); } else { final_rgb = mix(final_rgb, vec3<f32>(1.0), v_amount * vignette_mask); }
     }
 
+    // Optional clipping warnings.
     if (adjustments.global.show_clipping == 1u) {
         let HIGHLIGHT_WARNING_COLOR = vec3<f32>(1.0, 0.0, 0.0);
         let SHADOW_WARNING_COLOR = vec3<f32>(0.0, 0.0, 1.0);
@@ -1145,6 +1204,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
+    // Final dither to reduce banding in 8-bit output.
     let dither_amount = 1.0 / 255.0;
     final_rgb += dither(id.xy) * dither_amount;
 
