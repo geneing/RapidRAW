@@ -55,6 +55,9 @@ interface ImageCanvasProps {
   fullResolutionUrl?: string | null;
   isFullResolution?: boolean;
   isLoadingFullRes?: boolean;
+  isWbPickerActive?: boolean;
+  onWbPicked?: () => void;
+  setAdjustments(fn: (prev: Adjustments) => Adjustments): void;
 }
 
 interface ImageLayer {
@@ -65,6 +68,7 @@ interface ImageLayer {
 
 interface MaskOverlay {
   adjustments: Adjustments;
+  isToolActive: boolean;
   isSelected: boolean;
   onMaskMouseEnter(): void;
   onMaskMouseLeave(): void;
@@ -92,6 +96,7 @@ function linesIntersect(eraserLine: DrawnLine, drawnLine: DrawnLine) {
 const MaskOverlay = memo(
   ({
     adjustments,
+    isToolActive,
     isSelected,
     onMaskMouseEnter,
     onMaskMouseLeave,
@@ -106,6 +111,7 @@ const MaskOverlay = memo(
     const crop = adjustments.crop;
     const cropX = crop ? crop.x : 0;
     const cropY = crop ? crop.y : 0;
+    const handleSelect = isToolActive ? undefined : onSelect;
 
     useEffect(() => {
       if (isSelected && trRef.current && shapeRef.current) {
@@ -225,8 +231,8 @@ const MaskOverlay = memo(
 
     const commonProps = {
       dash: [4, 4],
-      onClick: onSelect,
-      onTap: onSelect,
+      onClick: handleSelect,
+      onTap: handleSelect,
       opacity: isSelected ? 1 : 0.7,
       stroke: isSelected ? '#0ea5e9' : subMask.mode === SubMaskMode.Subtractive ? '#f43f5e' : 'white',
       strokeScaleEnabled: false,
@@ -254,19 +260,16 @@ const MaskOverlay = memo(
     if (subMask.type === Mask.Brush) {
       const { lines = [] } = subMask.parameters;
       return (
-        <Group onClick={onSelect} onTap={onSelect}>
+        <Group onClick={handleSelect} onTap={handleSelect}>
           {lines.map((line: DrawnLine, i: number) => (
             <Line
-              dash={[4, 4]}
               hitStrokeWidth={line.brushSize * scale}
               key={i}
               lineCap="round"
               lineJoin="round"
-              opacity={isSelected ? 1 : 0.7}
               points={line.points.flatMap((p: Coord) => [(p.x - cropX) * scale, (p.y - cropY) * scale])}
-              stroke={isSelected ? '#0ea5e9' : subMask.mode === SubMaskMode.Subtractive ? '#f43f5e' : 'white'}
+              stroke="transparent"
               strokeScaleEnabled={false}
-              strokeWidth={isSelected ? 3 : 2}
               tension={0.5}
             />
           ))}
@@ -338,7 +341,7 @@ const MaskOverlay = memo(
       return (
         <Group
           draggable={isSelected}
-          onClick={onSelect}
+          onClick={handleSelect}
           onDragEnd={handleGroupDragEnd}
           onMouseEnter={(e: any) => {
             onMaskMouseEnter();
@@ -354,7 +357,7 @@ const MaskOverlay = memo(
               stage.container().style.cursor = 'default';
             }
           }}
-          onTap={onSelect}
+          onTap={handleSelect}
           rotation={(angle * 180) / Math.PI}
           x={groupX}
           y={groupY}
@@ -489,6 +492,9 @@ const ImageCanvas = memo(
     fullResolutionUrl,
     isFullResolution,
     isLoadingFullRes,
+    isWbPickerActive = false,
+    onWbPicked,
+    setAdjustments,
   }: ImageCanvasProps) => {
     const [isCropViewVisible, setIsCropViewVisible] = useState(false);
     const [layers, setLayers] = useState<Array<ImageLayer>>([]);
@@ -640,8 +646,99 @@ const ImageCanvas = memo(
       }
     }, [isCropping, uncroppedAdjustedPreviewUrl]);
 
+    const handleWbClick = useCallback((e: any) => {
+      if (!isWbPickerActive || !finalPreviewUrl || !onWbPicked) return;
+      
+      const stage = e.target.getStage();
+      const pointerPos = stage.getPointerPosition();
+      if (!pointerPos) return;
+
+      const x = pointerPos.x / imageRenderSize.scale;
+      const y = pointerPos.y / imageRenderSize.scale;
+
+      const imgLogicalWidth = imageRenderSize.width / imageRenderSize.scale;
+      const imgLogicalHeight = imageRenderSize.height / imageRenderSize.scale;
+      
+      if (x < 0 || x > imgLogicalWidth || y < 0 || y > imgLogicalHeight) return;
+
+      const img = new Image();
+      img.crossOrigin = "Anonymous";
+      img.src = finalPreviewUrl;
+      
+      img.onload = () => {
+        const radius = 5;
+        const side = radius * 2 + 1;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = side;
+        canvas.height = side;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return;
+
+        const scaleX = img.width / imgLogicalWidth;
+        const scaleY = img.height / imgLogicalHeight;
+        const srcX = Math.floor(x * scaleX);
+        const srcY = Math.floor(y * scaleY);
+
+        const startX = Math.max(0, srcX - radius);
+        const startY = Math.max(0, srcY - radius);
+        const endX = Math.min(img.width, srcX + radius + 1);
+        const endY = Math.min(img.height, srcY + radius + 1);
+        const sw = endX - startX;
+        const sh = endY - startY;
+
+        if (sw <= 0 || sh <= 0) return;
+
+        ctx.drawImage(img, startX, startY, sw, sh, 0, 0, sw, sh);
+
+        const imageData = ctx.getImageData(0, 0, sw, sh);
+        const data = imageData.data;
+        
+        let rTotal = 0, gTotal = 0, bTotal = 0;
+        let count = 0;
+
+        for (let i = 0; i < data.length; i += 4) {
+          rTotal += data[i];
+          gTotal += data[i + 1];
+          bTotal += data[i + 2];
+          count++;
+        }
+
+        if (count === 0) return;
+
+        const avgR = rTotal / count;
+        const avgG = gTotal / count;
+        const avgB = bTotal / count;
+
+        const linR = Math.pow(avgR / 255.0, 2.2);
+        const linG = Math.pow(avgG / 255.0, 2.2);
+        const linB = Math.pow(avgB / 255.0, 2.2);
+
+        const sumRB = linR + linB;
+        const deltaTemp = sumRB > 0.0001 ? ((linB - linR) / sumRB) * 125.0 : 0;
+
+        const linM = sumRB / 2.0;
+        const sumGM = linG + linM;
+        const deltaTint = sumGM > 0.0001 ? ((linG - linM) / sumGM) * 400.0 : 0;
+
+        setAdjustments((prev: Adjustments) => ({
+          ...prev,
+          temperature: Math.max(-100, Math.min(100, (prev.temperature || 0) + deltaTemp)),
+          tint: Math.max(-100, Math.min(100, (prev.tint || 0) + deltaTint)),
+        }));
+
+        onWbPicked();
+      };
+    }, [isWbPickerActive, finalPreviewUrl, imageRenderSize, onWbPicked, setAdjustments]);
+
     const handleMouseDown = useCallback(
       (e: any) => {
+        if (isWbPickerActive) {
+          e.evt.preventDefault();
+          handleWbClick(e);
+          return;
+        }
+
         if (isToolActive) {
           e.evt.preventDefault();
           isDrawing.current = true;
@@ -671,14 +768,28 @@ const ImageCanvas = memo(
           }
         }
       },
-      [isBrushActive, isAiSubjectActive, brushSettings, onSelectMask, onSelectAiSubMask, isMasking, isAiEditing],
+      [isWbPickerActive, handleWbClick, isBrushActive, isAiSubjectActive, brushSettings, onSelectMask, onSelectAiSubMask, isMasking, isAiEditing],
     );
 
     const handleMouseMove = useCallback(
       (e: any) => {
-        if (isToolActive) {
+        if (isWbPickerActive) {
+          return;
+        }
+
+        let pos;
+        if (e && typeof e.target?.getStage === 'function') {
           const stage = e.target.getStage();
-          const pos = stage.getPointerPosition();
+          pos = stage.getPointerPosition();
+        } else if (e && e.clientX != null && e.clientY != null) {
+          const stageEl = document.querySelector('.konvajs-content');
+          if (stageEl) {
+            const rect = stageEl.getBoundingClientRect();
+            pos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+          }
+        }
+
+        if (isToolActive) {
           if (pos) {
             setCursorPreview({ x: pos.x, y: pos.y, visible: true });
           } else {
@@ -690,8 +801,6 @@ const ImageCanvas = memo(
           return;
         }
 
-        const stage = e.target.getStage();
-        const pos = stage.getPointerPosition();
         if (!pos) {
           return;
         }
@@ -705,7 +814,7 @@ const ImageCanvas = memo(
           setPreviewLine(updatedLine);
         }
       },
-      [isToolActive],
+      [isToolActive, isWbPickerActive],
     );
 
     const handleMouseUp = useCallback(() => {
@@ -761,23 +870,12 @@ const ImageCanvas = memo(
 
         const existingLines = activeSubMask.parameters.lines || [];
 
-        if (brushSettings?.tool === ToolType.Eraser) {
-          const remainingLines = existingLines.filter(
-            (drawnLine: DrawnLine) => !linesIntersect(imageSpaceLine, drawnLine),
-          );
-          if (remainingLines.length !== existingLines.length) {
-            updateSubMask(activeId, {
-              parameters: { ...activeSubMask.parameters, lines: remainingLines },
-            });
-          }
-        } else {
-          updateSubMask(activeId, {
-            parameters: {
-              ...activeSubMask.parameters,
-              lines: [...existingLines, imageSpaceLine],
-            },
-          });
-        }
+        updateSubMask(activeId, {
+          parameters: {
+            ...activeSubMask.parameters,
+            lines: [...existingLines, imageSpaceLine],
+          },
+        });
       }
     }, [
       activeAiSubMaskId,
@@ -802,10 +900,25 @@ const ImageCanvas = memo(
 
     const handleMouseLeave = useCallback(() => {
       setCursorPreview((p: CursorPreview) => ({ ...p, visible: false }));
-      if (isDrawing.current) {
+    }, []);
+
+    useEffect(() => {
+      if (!isToolActive) return;
+      function onMove(e: MouseEvent) {
+        handleMouseMove(e);
+      }
+      function onUp(e: MouseEvent) {
         handleMouseUp();
       }
-    }, [handleMouseUp]);
+      if (isDrawing.current) {
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        return () => {
+          window.removeEventListener('mousemove', onMove);
+          window.removeEventListener('mouseup', onUp);
+        };
+      }
+    }, [isToolActive, handleMouseMove, handleMouseUp]);
 
     const handleStraightenMouseDown = (e: any) => {
       if (e.evt.button !== 0) {
@@ -1003,7 +1116,7 @@ const ImageCanvas = memo(
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             style={{
-              cursor: isToolActive ? 'crosshair' : 'default',
+              cursor: isWbPickerActive ? 'crosshair' : isToolActive ? 'crosshair' : 'default',
               left: `${imageRenderSize.offsetX}px`,
               opacity: showOriginal ? 0 : 1,
               pointerEvents: showOriginal ? 'none' : 'auto',
@@ -1020,6 +1133,7 @@ const ImageCanvas = memo(
                   <MaskOverlay
                     adjustments={adjustments}
                     isSelected={subMask.id === (isMasking ? activeMaskId : activeAiSubMaskId)}
+                    isToolActive={isToolActive}
                     key={subMask.id}
                     onMaskMouseEnter={() => !isToolActive && setIsMaskHovered(true)}
                     onMaskMouseLeave={() => !isToolActive && setIsMaskHovered(false)}

@@ -10,6 +10,7 @@ export enum Invokes {
   ApplyAdjustments = 'apply_adjustments',
   ApplyAdjustmentsToPaths = 'apply_adjustments_to_paths',
   ApplyAutoAdjustmentsToPaths = 'apply_auto_adjustments_to_paths',
+  ApplyDenoising = 'apply_denoising',
   BatchExportImages = 'batch_export_images',
   CalculateAutoAdjustments = 'calculate_auto_adjustments',
   CancelExport = 'cancel_export',
@@ -39,6 +40,7 @@ export enum Invokes {
   GenerateUncroppedPreview = 'generate_uncropped_preview',
   GenerateWaveform = 'image_processing::generate_waveform',
   GetFolderTree = 'get_folder_tree',
+  GetLogFilePath = 'get_log_file_path',
   GetPinnedFolderTrees = 'get_pinned_folder_trees',
   GetSupportedFileTypes = 'get_supported_file_types',
   HandleExportPresetsToFile = 'handle_export_presets_to_file',
@@ -61,6 +63,7 @@ export enum Invokes {
   ResetAdjustmentsForPaths = 'reset_adjustments_for_paths',
   SaveMetadataAndUpdateThumbnail = 'save_metadata_and_update_thumbnail',
   SaveCollage = 'save_collage',
+  SaveDenoisedImage = 'save_denoised_image',
   SavePanorama = 'save_panorama',
   SavePresets = 'save_presets',
   SaveSettings = 'save_settings',
@@ -133,6 +136,7 @@ export interface AppSettings {
   comfyuiWorkflowConfig?: ComfyUIWorkflowConfig;
   decorations?: any;
   editorPreviewResolution?: number;
+  enableZoomHifi?: boolean;
   enableAiTagging?: boolean;
   enableExifReading?: boolean;
   filterCriteria?: FilterCriteria;

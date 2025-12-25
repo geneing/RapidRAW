@@ -311,6 +311,7 @@ export default function SettingsPanel({
   });
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeCategory, setActiveCategory] = useState('general');
+  const [logPath, setLogPath] = useState('');
 
   useEffect(() => {
     if (appSettings?.comfyuiAddress !== comfyUiAddress) {
@@ -328,6 +329,19 @@ export default function SettingsPanel({
     });
     setRestartRequired(false);
   }, [appSettings]);
+
+  useEffect(() => {
+    const fetchLogPath = async () => {
+      try {
+        const path: string = await invoke(Invokes.GetLogFilePath);
+        setLogPath(path);
+      } catch (error) {
+        console.error('Failed to get log file path:', error);
+        setLogPath('Could not retrieve log file path.');
+      }
+    };
+    fetchLogPath();
+  }, []);
 
   const handleProcessingSettingChange = (key: string, value: any) => {
     setProcessingSettings((prev) => ({ ...prev, [key]: value }));
@@ -576,8 +590,8 @@ export default function SettingsPanel({
     <>
       <ConfirmModal {...confirmModalState} onClose={closeConfirmModal} />
       <div className="flex flex-col h-full w-full text-text-primary">
-        <header className="flex-shrink-0 flex items-center justify-between mb-6">
-          <div className="flex items-center">
+        <header className="flex-shrink-0 flex flex-wrap items-center justify-between gap-y-4 mb-8 pt-4">
+          <div className="flex items-center flex-shrink-0">
             <Button
               className="mr-4 hover:bg-surface text-text-primary rounded-full"
               onClick={onBack}
@@ -586,10 +600,10 @@ export default function SettingsPanel({
             >
               <ArrowLeft />
             </Button>
-            <h1 className="text-3xl font-bold text-accent">Settings</h1>
+            <h1 className="text-3xl font-bold text-accent whitespace-nowrap">Settings</h1>
           </div>
 
-          <div className="relative flex w-[450px] p-2 bg-surface rounded-md">
+          <div className="relative flex w-full min-[1200px]:w-[450px] p-2 bg-surface rounded-md">
             {settingCategories.map((category) => (
               <button
                 key={category.id}
@@ -612,8 +626,8 @@ export default function SettingsPanel({
                   />
                 )}
                 <span className="relative z-10 flex items-center">
-                  <category.icon size={16} className="mr-2" />
-                  {category.label}
+                  <category.icon size={16} className="mr-2 flex-shrink-0" />
+                  <span className="truncate">{category.label}</span>
                 </span>
               </button>
             ))}
@@ -687,6 +701,7 @@ export default function SettingsPanel({
                     preserved and applied even when hidden.
                   </p>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
+                    {/* Hide noise reduction to stop people from thinking it exists
                     <Switch
                       label="Noise Reduction"
                       checked={appSettings?.adjustmentVisibility?.noiseReduction ?? true}
@@ -699,7 +714,8 @@ export default function SettingsPanel({
                           },
                         })
                       }
-                    />
+                    /> 
+                    */}
                     <Switch
                       label="Chromatic Aberration"
                       checked={appSettings?.adjustmentVisibility?.chromaticAberration ?? false}
@@ -878,6 +894,18 @@ export default function SettingsPanel({
                         onChange={(value: any) => handleProcessingSettingChange('editorPreviewResolution', value)}
                         options={resolutions}
                         value={processingSettings.editorPreviewResolution}
+                      />
+                    </SettingItem>
+
+                    <SettingItem
+                      label="High Quality Zoom"
+                      description="Load a higher quality version of the image when zooming in for more detail. Disabling this can improve performance."
+                    >
+                      <Switch
+                        checked={appSettings?.enableZoomHifi ?? true}
+                        id="zoom-hifi-toggle"
+                        label="Enable High Quality Zoom"
+                        onChange={(checked) => onSettingsChange({ ...appSettings, enableZoomHifi: checked })}
                       />
                     </SettingItem>
 
@@ -1331,6 +1359,28 @@ export default function SettingsPanel({
                       isProcessing={isClearingCache}
                       message={cacheClearMessage}
                       title="Clear Thumbnail Cache"
+                    />
+
+                    <DataActionItem
+                      buttonAction={async () => {
+                        if (logPath && !logPath.startsWith('Could not')) {
+                          await invoke(Invokes.ShowInFinder, { path: logPath });
+                        }
+                      }}
+                      buttonText="Open Log File"
+                      description={
+                        <>
+                          View the application's log file for troubleshooting. The log is located at:
+                          <span className="block font-mono text-xs bg-bg-primary p-2 rounded mt-2 break-all border border-border-color">
+                            {logPath || 'Loading...'}
+                          </span>
+                        </>
+                      }
+                      disabled={!logPath || logPath.startsWith('Could not')}
+                      icon={<ExternalLinkIcon size={16} className="mr-2" />}
+                      isProcessing={false}
+                      message=""
+                      title="View Application Logs"
                     />
                   </div>
                 </div>

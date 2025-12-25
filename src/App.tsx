@@ -24,6 +24,7 @@ import {
   Redo,
   RotateCcw,
   Star,
+  Save,
   Palette,
   Tag,
   Trash2,
@@ -33,6 +34,7 @@ import {
   PinOff,
   Users,
   Gauge,
+  Grip,
 } from 'lucide-react';
 import TitleBar from './window/TitleBar';
 import CommunityPage from './components/panel/CommunityPage';
@@ -59,6 +61,7 @@ import ConfirmModal from './components/modals/ConfirmModal';
 import ImportSettingsModal from './components/modals/ImportSettingsModal';
 import RenameFileModal from './components/modals/RenameFileModal';
 import PanoramaModal from './components/modals/PanoramaModal';
+import DenoiseModal from './components/modals/DenoiseModal';
 import CollageModal from './components/modals/CollageModal';
 import CopyPasteSettingsModal from './components/modals/CopyPasteSettingsModal';
 import CullingModal from './components/modals/CullingModal';
@@ -158,6 +161,16 @@ interface PanoramaModalState {
   isOpen: boolean;
   progressMessage: string | null;
   stitchingSourcePaths: Array<string>;
+}
+
+interface DenoiseModalState {
+  isOpen: boolean;
+  isProcessing: boolean;
+  previewBase64: string | null;
+  originalBase64?: string | null;
+  error: string | null;
+  targetPath: string | null;
+  progressMessage: string | null;
 }
 
 interface CullingModalState {
@@ -322,6 +335,7 @@ function App() {
   const [thumbnailAspectRatio, setThumbnailAspectRatio] = useState(ThumbnailAspectRatio.Cover);
   const [copiedAdjustments, setCopiedAdjustments] = useState<Adjustments | null>(null);
   const [isStraightenActive, setIsStraightenActive] = useState(false);
+  const [isWbPickerActive, setIsWbPickerActive] = useState(false);
   const [copiedFilePaths, setCopiedFilePaths] = useState<Array<string>>([]);
   const [aiModelDownloadStatus, setAiModelDownloadStatus] = useState<string | null>(null);
   const [copiedSectionAdjustments, setCopiedSectionAdjustments] = useState(null);
@@ -356,6 +370,14 @@ function App() {
     isOpen: false,
     progressMessage: '',
     stitchingSourcePaths: [],
+  });
+  const [denoiseModalState, setDenoiseModalState] = useState<DenoiseModalState>({
+    isOpen: false,
+    isProcessing: false,
+    previewBase64: null,
+    error: null,
+    targetPath: null,
+    progressMessage: null,
   });
   const [cullingModalState, setCullingModalState] = useState<CullingModalState>({
     isOpen: false,
@@ -442,6 +464,14 @@ function App() {
     },
     [setAdjustments],
   );
+
+  const toggleWbPicker = useCallback(() => {
+    setIsWbPickerActive((prev) => !prev);
+  }, []);
+
+  const handleWbPicked = useCallback(() => {
+    //setIsWbPickerActive(false); // lets keep it active
+  }, []);
 
   useEffect(() => {
     setLiveAdjustments(historyAdjustments);
@@ -1316,18 +1346,27 @@ function App() {
     return () => clearTimeout(timer);
   }, [theme]);
 
-  const handleRefreshFolderTree = useCallback(async () => {
-    if (!rootPath) {
-      return;
+  const refreshAllFolderTrees = useCallback(async () => {
+    if (rootPath) {
+      try {
+        const treeData = await invoke(Invokes.GetFolderTree, { path: rootPath });
+        setFolderTree(treeData);
+      } catch (err) {
+        console.error('Failed to refresh main folder tree:', err);
+        setError(`Failed to refresh folder tree: ${err}.`);
+      }
     }
-    try {
-      const treeData = await invoke(Invokes.GetFolderTree, { path: rootPath });
-      setFolderTree(treeData);
-    } catch (err) {
-      console.error('Failed to refresh folder tree:', err);
-      setError(`Failed to refresh folder tree: ${err}.`);
+
+    const currentPins = appSettings?.pinnedFolders || [];
+    if (currentPins.length > 0) {
+      try {
+        const trees = await invoke(Invokes.GetPinnedFolderTrees, { paths: currentPins });
+        setPinnedFolderTrees(trees);
+      } catch (err) {
+        console.error('Failed to refresh pinned folder trees:', err);
+      }
     }
-  }, [rootPath]);
+  }, [rootPath, appSettings?.pinnedFolders]);
 
   const pinnedFolders = useMemo(() => appSettings?.pinnedFolders || [], [appSettings]);
 
@@ -1501,33 +1540,46 @@ function App() {
       const isExifSortActive = exifSortKeys.includes(sortCriteria.key);
       const shouldReadExif = appSettings?.enableExifReading ?? false;
 
-      if (shouldReadExif && files.length > 0) {
-        const paths = files.map((f: ImageFile) => f.path);
+      let freshExifData: Record<string, any> | null = null;
 
-        if (isExifSortActive) {
-          const exifDataMap: Record<string, any> = await invoke(Invokes.ReadExifForPaths, { paths });
-          const finalImageList = files.map((image) => ({
-            ...image,
-            exif: exifDataMap[image.path] || image.exif || null,
-          }));
-          setImageList(finalImageList);
-        } else {
-          setImageList(files);
-          invoke(Invokes.ReadExifForPaths, { paths })
-            .then((exifDataMap: any) => {
-              setImageList((currentImageList) =>
-                currentImageList.map((image) => ({
-                  ...image,
-                  exif: exifDataMap[image.path] || image.exif || null,
-                })),
-              );
-            })
-            .catch((err) => {
-              console.error('Failed to read EXIF data in background:', err);
-            });
-        }
-      } else {
-        setImageList(files);
+      if (shouldReadExif && files.length > 0 && isExifSortActive) {
+        const paths = files.map((f: ImageFile) => f.path);
+        freshExifData = await invoke(Invokes.ReadExifForPaths, { paths });
+      }
+
+      setImageList((prevList) => {
+        const prevMap = new Map(prevList.map((img) => [img.path, img]));
+
+        return files.map((newFile) => {
+          if (freshExifData && freshExifData[newFile.path]) {
+            newFile.exif = freshExifData[newFile.path];
+            return newFile;
+          }
+          const existing = prevMap.get(newFile.path);
+          if (existing && existing.modified === newFile.modified) {
+            return existing;
+          }
+
+          return newFile;
+        });
+      });
+
+      if (shouldReadExif && files.length > 0 && !isExifSortActive) {
+        const paths = files.map((f: ImageFile) => f.path);
+        invoke(Invokes.ReadExifForPaths, { paths })
+          .then((exifDataMap: any) => {
+            setImageList((currentImageList) =>
+              currentImageList.map((image) => {
+                if (exifDataMap[image.path] && !image.exif) {
+                   return { ...image, exif: exifDataMap[image.path] };
+                }
+                return image;
+              }),
+            );
+          })
+          .catch((err) => {
+            console.error('Failed to read EXIF data in background:', err);
+          });
       }
     } catch (err) {
       console.error('Failed to refresh image list:', err);
@@ -1583,15 +1635,101 @@ function App() {
     setActiveMaskId(null);
     setActiveMaskContainerId(null);
     setActiveAiPatchContainerId(null);
+    setIsWbPickerActive(false);
     setActiveAiSubMaskId(null);
     setLibraryActivePath(lastActivePath);
   }, [selectedImage?.path]);
+
+  const handleImageSelect = useCallback(
+    (path: string) => {
+      if (selectedImage?.path === path) {
+        return;
+      }
+      applyAdjustments.cancel();
+      debouncedSave.cancel();
+
+      setSelectedImage({
+        exif: null,
+        height: 0,
+        isRaw: false,
+        isReady: false,
+        metadata: null,
+        originalUrl: null,
+        path,
+        thumbnailUrl: thumbnails[path],
+        width: 0,
+      });
+      setOriginalSize({ width: 0, height: 0 });
+      setPreviewSize({ width: 0, height: 0 });
+      setMultiSelectedPaths([path]);
+      setLibraryActivePath(null);
+      setIsViewLoading(true);
+      setError(null);
+      setHistogram(null);
+      setFinalPreviewUrl(null);
+      setUncroppedAdjustedPreviewUrl(null);
+      setFullScreenUrl(null);
+      setFullResolutionUrl(null);
+      setTransformedOriginalUrl(null);
+      setLiveAdjustments(INITIAL_ADJUSTMENTS);
+      resetAdjustmentsHistory(INITIAL_ADJUSTMENTS);
+      setShowOriginal(false);
+      setActiveMaskId(null);
+      setActiveMaskContainerId(null);
+      setActiveAiPatchContainerId(null);
+      setActiveAiSubMaskId(null);
+      setIsWbPickerActive(false); 
+
+      if (transformWrapperRef.current) {
+        transformWrapperRef.current.resetTransform(0);
+      }
+
+      setZoom(1);
+      setIsLibraryExportPanelVisible(false);
+    },
+    [selectedImage?.path, applyAdjustments, debouncedSave, thumbnails, resetAdjustmentsHistory],
+  );
 
   const executeDelete = useCallback(
     async (pathsToDelete: Array<string>, options = { includeAssociated: false }) => {
       if (!pathsToDelete || pathsToDelete.length === 0) {
         return;
       }
+
+      const activePath = selectedImage ? selectedImage.path : libraryActivePath;
+      let nextImagePath: string | null = null;
+
+      if (activePath) {
+        const physicalPath = activePath.split('?vc=')[0];
+        const isActiveImageDeleted = pathsToDelete.some(
+          (p) => p === activePath || p === physicalPath,
+        );
+
+        if (isActiveImageDeleted) {
+          const currentIndex = sortedImageList.findIndex((img) => img.path === activePath);
+          if (currentIndex !== -1) {
+            const nextCandidate = sortedImageList
+              .slice(currentIndex + 1)
+              .find((img) => !pathsToDelete.includes(img.path));
+
+            if (nextCandidate) {
+              nextImagePath = nextCandidate.path;
+            } else {
+              const prevCandidate = sortedImageList
+                .slice(0, currentIndex)
+                .reverse()
+                .find((img) => !pathsToDelete.includes(img.path));
+              
+              if (prevCandidate) {
+                nextImagePath = prevCandidate.path;
+              }
+            }
+          }
+        } else {
+          nextImagePath = activePath;
+        }
+      }
+
       try {
         const command = options.includeAssociated ? 'delete_files_with_associated' : 'delete_files_from_disk';
         await invoke(command, { paths: pathsToDelete });
@@ -1605,20 +1743,27 @@ function App() {
           );
 
           if (isFileBeingEditedDeleted) {
-            handleBackToLibrary();
+            if (nextImagePath) {
+              handleImageSelect(nextImagePath);
+            } else {
+              handleBackToLibrary();
+            }
           }
-        }
-
-        setMultiSelectedPaths([]);
-        if (libraryActivePath && pathsToDelete.includes(libraryActivePath)) {
-          setLibraryActivePath(null);
+        } else {
+          if (nextImagePath) {
+            setMultiSelectedPaths([nextImagePath]);
+            setLibraryActivePath(nextImagePath);
+          } else {
+            setMultiSelectedPaths([]);
+            setLibraryActivePath(null);
+          }
         }
       } catch (err) {
         console.error('Failed to delete files:', err);
         setError(`Failed to delete files: ${err}`);
       }
     },
-    [refreshImageList, selectedImage, handleBackToLibrary, libraryActivePath],
+    [refreshImageList, selectedImage, handleBackToLibrary, libraryActivePath, sortedImageList, handleImageSelect],
   );
 
   const handleDeleteSelected = useCallback(() => {
@@ -1974,6 +2119,10 @@ function App() {
 
   const handleFullResolutionLogic = useCallback(
     (targetZoomPercent: number, currentDisplayWidth: number) => {
+      if (appSettings?.enableZoomHifi === false) {
+        return;
+      }
+
       if (!initialFitScale) {
         return;
       }
@@ -2017,6 +2166,7 @@ function App() {
       adjustments,
       fullResolutionUrl,
       visualAdjustmentsKey,
+      appSettings,
     ],
   );
 
@@ -2093,56 +2243,19 @@ function App() {
     [originalSize, baseRenderSize, handleFullResolutionLogic, adjustments.orientationSteps],
   );
 
-  const handleImageSelect = useCallback(
-    (path: string) => {
-      if (selectedImage?.path === path) {
-        return;
-      }
-      applyAdjustments.cancel();
-      debouncedSave.cancel();
-
-      setSelectedImage({
-        exif: null,
-        height: 0,
-        isRaw: false,
-        isReady: false,
-        metadata: null,
-        originalUrl: null,
-        path,
-        thumbnailUrl: thumbnails[path],
-        width: 0,
-      });
-      setOriginalSize({ width: 0, height: 0 });
-      setPreviewSize({ width: 0, height: 0 });
-      setMultiSelectedPaths([path]);
-      setLibraryActivePath(null);
-      setIsViewLoading(true);
-      setError(null);
-      setHistogram(null);
-      setFinalPreviewUrl(null);
-      setUncroppedAdjustedPreviewUrl(null);
-      setFullScreenUrl(null);
-      setFullResolutionUrl(null);
-      setTransformedOriginalUrl(null);
-      setLiveAdjustments(INITIAL_ADJUSTMENTS);
-      resetAdjustmentsHistory(INITIAL_ADJUSTMENTS);
-      setShowOriginal(false);
-      setActiveMaskId(null);
-      setActiveMaskContainerId(null);
-      setActiveAiPatchContainerId(null);
-      setActiveAiSubMaskId(null);
-
-      if (transformWrapperRef.current) {
-        transformWrapperRef.current.resetTransform(0);
-      }
-
-      setZoom(1);
-      setIsLibraryExportPanelVisible(false);
-    },
-    [selectedImage?.path, applyAdjustments, debouncedSave, thumbnails, resetAdjustmentsHistory],
-  );
+  const isAnyModalOpen = 
+    isCreateFolderModalOpen ||
+    isRenameFolderModalOpen ||
+    isRenameFileModalOpen ||
+    isImportModalOpen ||
+    isCopyPasteSettingsModalOpen ||
+    confirmModalState.isOpen ||
+    panoramaModalState.isOpen ||
+    cullingModalState.isOpen ||
+    collageModalState.isOpen;
 
   useKeyboardShortcuts({
+    isModalOpen: isAnyModalOpen,
     activeAiPatchContainerId,
     activeAiSubMaskId,
     activeMaskContainerId,
@@ -2321,7 +2434,7 @@ function App() {
       listen('import-complete', () => {
         if (isEffectActive) {
           setImportState((prev: ImportState) => ({ ...prev, status: Status.Success }));
-          handleRefreshFolderTree();
+          refreshAllFolderTrees();
           if (currentFolderPathRef.current) {
             handleSelectSubfolder(currentFolderPathRef.current, false);
           }
@@ -2336,12 +2449,41 @@ function App() {
           }));
         }
       }),
+      listen('denoise-progress', (event: any) => {
+        if (isEffectActive) {
+          setDenoiseModalState((prev) => ({ ...prev, progressMessage: event.payload as string }));
+        }
+      }),
+      listen('denoise-complete', (event: any) => {
+        if (isEffectActive) {
+          const payload = event.payload;
+          const isObject = typeof payload === 'object' && payload !== null;
+          
+          setDenoiseModalState((prev) => ({
+            ...prev,
+            isProcessing: false,
+            previewBase64: isObject ? payload.denoised : payload,
+            originalBase64: isObject ? payload.original : null,
+            progressMessage: null
+          }));
+        }
+      }),
+      listen('denoise-error', (event: any) => {
+        if (isEffectActive) {
+          setDenoiseModalState((prev) => ({
+            ...prev,
+            isProcessing: false,
+            error: String(event.payload),
+            progressMessage: null
+          }));
+        }
+      }),
     ];
     return () => {
       isEffectActive = false;
       listeners.forEach((p) => p.then((unlisten) => unlisten()));
     };
-  }, [handleRefreshFolderTree, handleSelectSubfolder]);
+  }, [refreshAllFolderTrees, handleSelectSubfolder]);
 
   useEffect(() => {
     if ([Status.Success, Status.Error, Status.Cancelled].includes(exportState.status)) {
@@ -2489,6 +2631,39 @@ function App() {
       setPanoramaModalState((prev: PanoramaModalState) => ({ ...prev, error: String(err) }));
       throw err;
     }
+  };
+
+  const handleApplyDenoise = useCallback(async (intensity: number) => {
+    if (!denoiseModalState.targetPath) return;
+    
+    setDenoiseModalState(prev => ({ 
+      ...prev, 
+      isProcessing: true, 
+      error: null, 
+      progressMessage: "Starting engine..." 
+    }));
+    
+    try {
+        await invoke(Invokes.ApplyDenoising, { 
+            path: denoiseModalState.targetPath,
+            intensity: intensity 
+        });
+    } catch (err) {
+        setDenoiseModalState(prev => ({ 
+            ...prev, 
+            isProcessing: false, 
+            error: String(err) 
+        }));
+    }
+  }, [denoiseModalState.targetPath]);
+
+  const handleSaveDenoisedImage = async (): Promise<string> => {
+    if (!denoiseModalState.targetPath) throw new Error("No target path");
+    const savedPath = await invoke<string>(Invokes.SaveDenoisedImage, {
+        originalPathStr: denoiseModalState.targetPath
+    });
+    await refreshImageList();
+    return savedPath;
   };
 
   const handleSaveCollage = async (base64Data: string, firstPath: string): Promise<string> => {
@@ -2931,6 +3106,15 @@ function App() {
     const commonTags = getCommonTags([selectedImage.path]);
 
     const options: Array<Option> = [
+      {
+        label: 'Export Image',
+        icon: Save,
+        onClick: () => {
+          setRenderedRightPanel(Panel.Export);
+          setActiveRightPanel(Panel.Export);
+        },
+      },
+      { type: OPTION_SEPARATOR },
       { label: 'Undo', icon: Undo, onClick: undo, disabled: !canUndo },
       { label: 'Redo', icon: Redo, onClick: redo, disabled: !canRedo },
       { type: OPTION_SEPARATOR },
@@ -2942,7 +3126,7 @@ function App() {
         disabled: copiedAdjustments === null,
       },
       { type: OPTION_SEPARATOR },
-      { label: 'Auto Adjust', icon: Aperture, onClick: handleAutoAdjustments },
+      { label: 'Auto Adjust Image', icon: Aperture, onClick: handleAutoAdjustments },
       {
         label: 'Rating',
         icon: Star,
@@ -3015,6 +3199,7 @@ function App() {
     const isSingleSelection = selectionCount === 1;
     const isEditingThisImage = selectedImage?.path === path;
     const deleteLabel = isSingleSelection ? 'Delete Image' : `Delete ${selectionCount} Images`;
+    const exportLabel = isSingleSelection ? 'Export Image' : `Export ${selectionCount} Images`;
 
     const selectionHasVirtualCopies =
       isSingleSelection &&
@@ -3079,9 +3264,9 @@ function App() {
     const pasteLabel = isSingleSelection ? 'Paste Adjustments' : `Paste Adjustments to ${selectionCount} Images`;
     const resetLabel = isSingleSelection ? 'Reset Adjustments' : `Reset Adjustments on ${selectionCount} Images`;
     const copyLabel = isSingleSelection ? 'Copy Image' : `Copy ${selectionCount} Images`;
-    const autoAdjustLabel = isSingleSelection ? 'Auto Adjust Image' : `Auto Adjust Images`;
+    const autoAdjustLabel = isSingleSelection ? 'Auto Adjust Image' : `Auto Adjust ${selectionCount} Images`;
     const renameLabel = isSingleSelection ? 'Rename Image' : `Rename ${selectionCount} Images`;
-    const cullLabel = isSingleSelection ? 'Cull Image' : `Cull Images`;
+    const cullLabel = isSingleSelection ? 'Cull Image' : `Cull ${selectionCount} Images`;
     const collageLabel = isSingleSelection ? 'Create Collage' : `Create Collage`;
     const stitchLabel = `Stitch Panorama`;
 
@@ -3096,15 +3281,12 @@ function App() {
     };
 
     const handleApplyAutoAdjustmentsToSelection = () => {
-      if (finalSelection.length === 0) {
-        return;
-      }
+      if (finalSelection.length === 0) return;
 
       invoke(Invokes.ApplyAutoAdjustmentsToPaths, { paths: finalSelection })
         .then(async () => {
           if (selectedImage && finalSelection.includes(selectedImage.path)) {
             const metadata: Metadata = await invoke(Invokes.LoadMetadata, { path: selectedImage.path });
-
             if (metadata.adjustments && !metadata.adjustments.is_null) {
               const normalized = normalizeLoadedAdjustments(metadata.adjustments);
               setLiveAdjustments(normalized);
@@ -3113,7 +3295,6 @@ function App() {
           }
           if (libraryActivePath && finalSelection.includes(libraryActivePath)) {
             const metadata: Metadata = await invoke(Invokes.LoadMetadata, { path: libraryActivePath });
-
             if (metadata.adjustments && !metadata.adjustments.is_null) {
               const normalized = normalizeLoadedAdjustments(metadata.adjustments);
               setLibraryActiveAdjustments(normalized);
@@ -3126,18 +3307,42 @@ function App() {
         });
     };
 
+    const onExportClick = () => {
+      if (selectedImage) {
+        if (selectedImage.path !== path) {
+            handleImageSelect(path);
+        }
+        setRenderedRightPanel(Panel.Export);
+        setActiveRightPanel(Panel.Export);
+      } else {
+        setIsLibraryExportPanelVisible(true);
+      }
+    };
+
     const options = [
       ...(!isEditingThisImage
         ? [
             {
               disabled: !isSingleSelection,
               icon: Edit,
-              label: 'Edit Photo',
+              label: 'Edit Image',
               onClick: () => handleImageSelect(finalSelection[0]),
+            },
+            {
+              icon: Save,
+              label: exportLabel,
+              onClick: onExportClick,
             },
             { type: OPTION_SEPARATOR },
           ]
-        : []),
+        : [
+            {
+              icon: Save,
+              label: exportLabel,
+              onClick: onExportClick,
+            },
+            { type: OPTION_SEPARATOR },
+          ]),
       {
         disabled: !isSingleSelection,
         icon: Copy,
@@ -3183,7 +3388,22 @@ function App() {
             onClick: () => handleCreateVirtualCopy(finalSelection[0]),
           },
           {
-            disabled: selectionCount < 2  || selectionCount > 9,
+            label: 'Denoise',
+            icon: Grip,
+            disabled: !isSingleSelection,
+            onClick: () => {
+                setDenoiseModalState({
+                    isOpen: true,
+                    isProcessing: false,
+                    previewBase64: null,
+                    error: null,
+                    targetPath: finalSelection[0],
+                    progressMessage: null
+                });
+            }
+          },
+          {
+            disabled: selectionCount < 2  || selectionCount > 30,
             icon: Images,
             label: stitchLabel,
             onClick: () => {
@@ -3312,7 +3532,7 @@ function App() {
     if (folderName && folderName.trim() !== '' && folderActionTarget) {
       try {
         await invoke(Invokes.CreateFolder, { path: `${folderActionTarget}/${folderName.trim()}` });
-        handleRefreshFolderTree();
+        refreshAllFolderTrees();
       } catch (err) {
         setError(`Failed to create folder: ${err}`);
       }
@@ -3322,20 +3542,41 @@ function App() {
   const handleRenameFolder = async (newName: string) => {
     if (newName && newName.trim() !== '' && folderActionTarget) {
       try {
-        await invoke(Invokes.RenameFolder, { path: folderActionTarget, newName: newName.trim() });
-        if (rootPath === folderActionTarget) {
-          const newRootPath = folderActionTarget.substring(0, folderActionTarget.lastIndexOf('/') + 1) + newName.trim();
-          setRootPath(newRootPath);
-          handleSettingsChange({ ...appSettings, lastRootPath: newRootPath } as AppSettings);
+        const oldPath = folderActionTarget;
+        const trimmedNewName = newName.trim();
+
+        await invoke(Invokes.RenameFolder, { path: oldPath, newName: trimmedNewName });
+
+        const parentDir = getParentDir(oldPath);
+        const separator = oldPath.includes('/') ? '/' : '\\';
+        const newPath = parentDir ? `${parentDir}${separator}${trimmedNewName}` : trimmedNewName;
+
+        const newAppSettings = { ...appSettings } as AppSettings;
+        let settingsChanged = false;
+
+        if (rootPath === oldPath) {
+          setRootPath(newPath);
+          newAppSettings.lastRootPath = newPath;
+          settingsChanged = true;
         }
-        if (currentFolderPath?.startsWith(folderActionTarget)) {
-          const newCurrentPath = currentFolderPath.replace(
-            folderActionTarget,
-            folderActionTarget.substring(0, folderActionTarget.lastIndexOf('/') + 1) + newName.trim(),
-          );
+        if (currentFolderPath?.startsWith(oldPath)) {
+          const newCurrentPath = currentFolderPath.replace(oldPath, newPath);
           setCurrentFolderPath(newCurrentPath);
         }
-        handleRefreshFolderTree();
+
+        const currentPins = appSettings?.pinnedFolders || [];
+        if (currentPins.includes(oldPath)) {
+          const newPins = currentPins.map(p => (p === oldPath ? newPath : p)).sort((a, b) => a.localeCompare(b));
+          newAppSettings.pinnedFolders = newPins;
+          settingsChanged = true;
+        }
+
+        if (settingsChanged) {
+          handleSettingsChange(newAppSettings);
+        }
+
+        await refreshAllFolderTrees();
+
       } catch (err) {
         setError(`Failed to rename folder: ${err}`);
       }
@@ -3410,7 +3651,7 @@ function App() {
                 await invoke(Invokes.MoveFiles, { sourcePaths: copiedFilePaths, destinationFolder: targetPath });
                 setCopiedFilePaths([]);
                 setMultiSelectedPaths([]);
-                handleRefreshFolderTree();
+                refreshAllFolderTrees();
                 handleLibraryRefresh();
               } catch (err) {
                 setError(`Failed to move files: ${err}`);
@@ -3444,7 +3685,7 @@ function App() {
                     try {
                       await invoke(Invokes.DeleteFolder, { path: targetPath });
                       if (currentFolderPath?.startsWith(targetPath)) await handleSelectSubfolder(rootPath);
-                      handleRefreshFolderTree();
+                      refreshAllFolderTrees();
                     } catch (err) {
                       setError(`Failed to delete folder: ${err}`);
                     }
@@ -3489,7 +3730,7 @@ function App() {
                 await invoke(Invokes.MoveFiles, { sourcePaths: copiedFilePaths, destinationFolder: currentFolderPath });
                 setCopiedFilePaths([]);
                 setMultiSelectedPaths([]);
-                handleRefreshFolderTree();
+                refreshAllFolderTrees();
                 handleLibraryRefresh();
               } catch (err) {
                 setError(`Failed to move files: ${err}`);
@@ -3553,6 +3794,8 @@ function App() {
               onZoomed={handleUserTransform}
               renderedRightPanel={renderedRightPanel}
               selectedImage={selectedImage}
+              isWbPickerActive={isWbPickerActive}
+              onWbPicked={handleWbPicked}
               setAdjustments={setAdjustments}
               setShowOriginal={setShowOriginal}
               showOriginal={showOriginal}
@@ -3645,6 +3888,8 @@ function App() {
                           theme={theme}
                           handleLutSelect={handleLutSelect}
                           appSettings={appSettings}
+                          isWbPickerActive={isWbPickerActive}
+                          toggleWbPicker={toggleWbPicker}
                         />
                       )}
                       {renderedRightPanel === Panel.Metadata && <MetadataPanel selectedImage={selectedImage} />}
@@ -3663,6 +3908,7 @@ function App() {
                           activeMaskId={activeMaskId}
                           adjustments={adjustments}
                           aiModelDownloadStatus={aiModelDownloadStatus}
+                          appSettings={appSettings}
                           brushSettings={brushSettings}
                           copiedMask={copiedMask}
                           histogram={histogram}
@@ -3920,6 +4166,18 @@ function App() {
         }}
         onSave={handleSavePanorama}
         progressMessage={panoramaModalState.progressMessage}
+      />
+      <DenoiseModal 
+        isOpen={denoiseModalState.isOpen}
+        onClose={() => setDenoiseModalState(prev => ({ ...prev, isOpen: false }))}
+        onDenoise={handleApplyDenoise}
+        onSave={handleSaveDenoisedImage}
+        onOpenFile={handleImageSelect}
+        previewBase64={denoiseModalState.previewBase64}
+        originalBase64={denoiseModalState.originalBase64 || null}
+        isProcessing={denoiseModalState.isProcessing}
+        error={denoiseModalState.error}
+        progressMessage={denoiseModalState.progressMessage}
       />
       <CreateFolderModal
         isOpen={isCreateFolderModalOpen}
