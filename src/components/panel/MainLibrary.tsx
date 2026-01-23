@@ -40,7 +40,7 @@ import {
   ThumbnailAspectRatio,
 } from '../ui/AppProperties';
 import { Color, COLOR_LABELS } from '../../utils/adjustments';
-import { ImportState, Status } from './right/ExportImportProperties';
+import { ImportState, Status } from '../ui/ExportImportProperties';
 
 interface DropdownMenuProps {
   buttonContent: any;
@@ -191,6 +191,7 @@ const rawStatusOptions: Array<KeyValueLabel> = [
   { key: RawStatus.All, label: 'All Types' },
   { key: RawStatus.RawOnly, label: 'RAW Only' },
   { key: RawStatus.NonRawOnly, label: 'Non-RAW Only' },
+  { key: RawStatus.RawOverNonRaw, label: 'Prefer RAW' },
 ];
 
 const thumbnailSizeOptions: Array<ThumbnailSizeOption> = [
@@ -936,7 +937,6 @@ function Thumbnail({
       }}
       onContextMenu={onContextMenu}
       onDoubleClick={() => onImageDoubleClick(path)}
-      title={path.split(/[\\/]/).pop()}
     >
       {layers.length > 0 && (
         <div className="absolute inset-0 w-full h-full">
