@@ -35,6 +35,7 @@ const FilmstripThumbnail = ({
   const [aspectRatio, setAspectRatio] = useState<number | null>(null);
   const [layers, setLayers] = useState<ImageLayer[]>([]);
   const latestThumbDataRef = useRef<string | undefined>(undefined);
+  const isInitialLoad = useRef(true);
 
   const { path, tags } = imageFile;
   const rating = imageRatings?.[path] || 0;
@@ -50,10 +51,20 @@ const FilmstripThumbnail = ({
       const img = new Image();
       img.onload = () => {
         setAspectRatio(img.naturalWidth / img.naturalHeight);
+        if (isInitialLoad.current) {
+          setTimeout(() => {
+            isInitialLoad.current = false;
+          }, 200);
+        }
       };
       img.src = thumbData;
     } else {
       setAspectRatio(null);
+      if (isInitialLoad.current) {
+        setTimeout(() => {
+          isInitialLoad.current = false;
+        }, 200);
+      }
     }
   }, [thumbData, thumbnailAspectRatio]);
 
@@ -128,6 +139,12 @@ const FilmstripThumbnail = ({
       )}
       data-path={path}
       layout
+      transition={{
+        layout: {
+          duration: isInitialLoad.current ? 0 : 0.3,
+          ease: 'easeInOut',
+        },
+      }}
       onClick={(e: any) => {
         e.stopPropagation();
         if (onImageSelect) {
@@ -237,6 +254,7 @@ export default function Filmstrip({
   thumbnailAspectRatio,
 }: FilmStripProps) {
   const filmstripRef = useRef<HTMLDivElement>(null);
+  const lastScrolledPathRef = useRef<string | null>(null);
 
   useEffect(() => {
     const element = filmstripRef.current;
@@ -263,20 +281,19 @@ export default function Filmstrip({
 
   useEffect(() => {
     if (selectedImage && filmstripRef.current) {
-      const selectedIndex = imageList.findIndex((img: ImageFile) => img.path === selectedImage.path);
+      const activeElement = filmstripRef.current.querySelector(`[data-path="${CSS.escape(selectedImage.path)}"]`);
 
-      if (selectedIndex !== -1) {
-        const activeElement = filmstripRef.current.querySelector(`[data-path="${CSS.escape(selectedImage.path)}"]`);
+      if (activeElement && lastScrolledPathRef.current !== selectedImage.path) {
+        const timer = setTimeout(() => {
+          activeElement.scrollIntoView({
+            behavior: 'smooth',
+            block: 'nearest',
+            inline: 'center',
+          });
+          lastScrolledPathRef.current = selectedImage.path;
+        }, 320);
 
-        if (activeElement) {
-          setTimeout(() => {
-            activeElement.scrollIntoView({
-              behavior: 'smooth',
-              block: 'nearest',
-              inline: 'center',
-            });
-          }, 320);
-        }
+        return () => clearTimeout(timer);
       }
     }
   }, [selectedImage, imageList]);

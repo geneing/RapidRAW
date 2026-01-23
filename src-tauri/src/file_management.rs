@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::BufReader;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,8 +16,6 @@ use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma};
-use little_exif::exif_tag::ExifTag;
-use little_exif::metadata::Metadata;
 use num_cpus;
 use rayon::ThreadPoolBuilder;
 use rayon::prelude::*;
@@ -35,12 +32,14 @@ use crate::gpu_processing;
 use crate::image_loader;
 use crate::image_processing::GpuContext;
 use crate::image_processing::{
-    Crop, ImageMetadata, apply_coarse_rotation, apply_crop, apply_flip, apply_rotation,
+    Crop, ImageMetadata, apply_coarse_rotation, apply_crop, apply_flip, apply_rotation, apply_geometry_warp,
     auto_results_to_json, get_all_adjustments_from_json, perform_auto_analysis, apply_cpu_default_raw_processing,
 };
-use crate::mask_generation::{MaskDefinition, generate_mask_bitmap};
+use crate::mask_generation::MaskDefinition;
 use crate::preset_converter;
 use crate::tagging::COLOR_TAG_PREFIX;
+use crate::calculate_geometry_hash;
+use crate::exif_processing;
 
 const THUMBNAIL_WIDTH: u32 = 640;
 
@@ -130,59 +129,6 @@ pub struct LastFolderState {
     pub expanded_folders: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ComfyUIWorkflowConfig {
-    pub workflow_path: Option<String>,
-    pub model_checkpoints: HashMap<String, String>,
-    pub vae_loaders: HashMap<String, String>,
-    pub controlnet_loaders: HashMap<String, String>,
-    pub source_image_node_id: String,
-    pub mask_image_node_id: String,
-    pub text_prompt_node_id: String,
-    pub final_output_node_id: String,
-    pub sampler_node_id: String,
-    pub sampler_steps: u32,
-    pub transfer_resolution: Option<u32>,
-    pub inpaint_resolution_node_id: String,
-    pub inpaint_resolution: u32,
-}
-
-impl Default for ComfyUIWorkflowConfig {
-    fn default() -> Self {
-        let mut model_checkpoints = HashMap::new();
-        model_checkpoints.insert(
-            "1".to_string(),
-            "XL_RealVisXL_V5.0_Lightning.safetensors".to_string(),
-        );
-
-        let mut vae_loaders = HashMap::new();
-        vae_loaders.insert("49".to_string(), "sdxl_vae.safetensors".to_string());
-
-        let mut controlnet_loaders = HashMap::new();
-        controlnet_loaders.insert(
-            "12".to_string(),
-            "diffusion_pytorch_model_promax.safetensors".to_string(),
-        );
-
-        Self {
-            workflow_path: None,
-            model_checkpoints,
-            vae_loaders,
-            controlnet_loaders,
-            source_image_node_id: "30".to_string(),
-            mask_image_node_id: "47".to_string(),
-            text_prompt_node_id: "7".to_string(),
-            final_output_node_id: "41".to_string(),
-            sampler_node_id: "28".to_string(),
-            sampler_steps: 10,
-            transfer_resolution: Some(3072),
-            inpaint_resolution_node_id: "37".to_string(),
-            inpaint_resolution: 1280,
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum PasteMode {
@@ -224,6 +170,71 @@ impl Default for CopyPasteSettings {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreset {
+    pub id: String,
+    pub name: String,
+    pub file_format: String,
+    pub jpeg_quality: u8,
+    pub enable_resize: bool,
+    pub resize_mode: String,
+    pub resize_value: u32,
+    pub dont_enlarge: bool,
+    pub keep_metadata: bool,
+    pub strip_gps: bool,
+    pub filename_template: String,
+    pub enable_watermark: bool,
+    pub watermark_path: Option<String>,
+    pub watermark_anchor: Option<String>,
+    pub watermark_scale: u32,
+    pub watermark_spacing: u32,
+    pub watermark_opacity: u32,
+}
+
+fn default_export_presets() -> Vec<ExportPreset> {
+    vec![
+        ExportPreset {
+            id: "default-hq".to_string(),
+            name: "High Quality".to_string(),
+            file_format: "jpeg".to_string(),
+            jpeg_quality: 95,
+            enable_resize: false,
+            resize_mode: "longEdge".to_string(),
+            resize_value: 2048,
+            dont_enlarge: true,
+            keep_metadata: true,
+            strip_gps: false,
+            filename_template: "{original_filename}".to_string(),
+            enable_watermark: false,
+            watermark_path: None,
+            watermark_anchor: Some("bottomRight".to_string()),
+            watermark_scale: 10,
+            watermark_spacing: 5,
+            watermark_opacity: 75,
+        },
+        ExportPreset {
+            id: "default-fast".to_string(),
+            name: "Fast (Web)".to_string(),
+            file_format: "jpeg".to_string(),
+            jpeg_quality: 80,
+            enable_resize: true,
+            resize_mode: "width".to_string(),
+            resize_value: 2048,
+            dont_enlarge: true,
+            keep_metadata: false,
+            strip_gps: true,
+            filename_template: "{original_filename}_web".to_string(),
+            enable_watermark: false,
+            watermark_path: None,
+            watermark_anchor: Some("bottomRight".to_string()),
+            watermark_scale: 10,
+            watermark_spacing: 5,
+            watermark_opacity: 75,
+        },
+    ]
+}
+
 fn default_tagging_shortcuts_option() -> Option<Vec<String>> {
     Some(vec![
         "portrait".to_string(),
@@ -237,7 +248,6 @@ fn default_tagging_shortcuts_option() -> Option<Vec<String>> {
         "event".to_string(),
     ])
 }
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -247,14 +257,17 @@ pub struct AppSettings {
     pub editor_preview_resolution: Option<u32>,
     #[serde(default)]
     pub enable_zoom_hifi: Option<bool>,
+    #[serde(default)]
+    pub enable_live_previews: Option<bool>,
+    #[serde(default)]
+    pub enable_high_quality_live_previews: Option<bool>,
     pub sort_criteria: Option<SortCriteria>,
     pub filter_criteria: Option<FilterCriteria>,
     pub theme: Option<String>,
     pub transparent: Option<bool>,
     pub decorations: Option<bool>,
-    pub comfyui_address: Option<String>,
-    #[serde(default)]
-    pub comfyui_workflow_config: ComfyUIWorkflowConfig,
+    #[serde(alias = "comfyuiAddress")]
+    pub ai_connector_address: Option<String>,
     pub last_folder_state: Option<LastFolderState>,
     pub adaptive_editor_theme: Option<bool>,
     pub ui_visibility: Option<Value>,
@@ -278,6 +291,10 @@ pub struct AppSettings {
     pub processing_backend: Option<String>,
     #[serde(default)]
     pub linux_gpu_optimization: Option<bool>,
+    #[serde(default)]
+    pub library_view_mode: Option<String>,
+    #[serde(default = "default_export_presets")]
+    pub export_presets: Vec<ExportPreset>,
 }
 
 fn default_adjustment_visibility() -> HashMap<String, bool> {
@@ -300,6 +317,8 @@ impl Default for AppSettings {
             pinned_folders: Vec::new(),
             editor_preview_resolution: Some(1920),
             enable_zoom_hifi: Some(true),
+            enable_live_previews: Some(true),
+            enable_high_quality_live_previews: Some(false),
             sort_criteria: None,
             filter_criteria: None,
             theme: Some("dark".to_string()),
@@ -308,8 +327,7 @@ impl Default for AppSettings {
             decorations: Some(true),
             #[cfg(any(target_os = "windows", target_os = "macos"))]
             decorations: Some(false),
-            comfyui_address: None,
-            comfyui_workflow_config: ComfyUIWorkflowConfig::default(),
+            ai_connector_address: None,
             last_folder_state: None,
             adaptive_editor_theme: Some(false),
             ui_visibility: None,
@@ -329,6 +347,8 @@ impl Default for AppSettings {
             linux_gpu_optimization: Some(true),
             #[cfg(not(target_os = "linux"))]
             linux_gpu_optimization: Some(false),
+            library_view_mode: Some("flat".to_string()),
+            export_presets: default_export_presets(),
         }
     }
 }
@@ -391,33 +411,14 @@ pub async fn read_exif_for_paths(
 ) -> Result<HashMap<String, HashMap<String, String>>, String> {
     let exif_data: HashMap<String, HashMap<String, String>> = paths
         .par_iter()
-        .filter_map(|path_str| {
-            let (source_path, _) = parse_virtual_path(path_str);
-            let file = match fs::File::open(source_path) {
-                Ok(f) => f,
-                Err(_) => return None,
-            };
-            let mut buf_reader = BufReader::new(&file);
-            let exif_reader = exif::Reader::new();
-
-            if let Ok(exif) = exif_reader.read_from_container(&mut buf_reader) {
-                let mut exif_map = HashMap::new();
-                for field in exif.fields() {
-                    exif_map.insert(
-                        field.tag.to_string(),
-                        field.display_value().with_unit(&exif).to_string(),
-                    );
-                }
-                if exif_map.is_empty() {
-                    None
-                } else {
-                    Some((path_str.clone(), exif_map))
-                }
-            } else {
-                None
-            }
+        .filter_map(|virtual_path| {
+            let (source_path, _) = parse_virtual_path(virtual_path);
+            let source_path_str = source_path.to_string_lossy().to_string();
+            exif_processing::extract_metadata(&source_path_str)
+                .map(|exif_map| (virtual_path.clone(), exif_map))
         })
         .collect();
+
     Ok(exif_data)
 }
 
@@ -734,51 +735,65 @@ pub fn generate_thumbnail_data(
         .as_ref()
         .map_or(serde_json::Value::Null, |m| m.adjustments.clone());
 
-    let settings = crate::file_management::load_settings(app_handle.clone()).unwrap_or_default();
-    let highlight_compression = settings.raw_highlight_compression.unwrap_or(2.5);
-
-    let composite_image = if let Some(img) = preloaded_image {
-        image_loader::composite_patches_on_image(img, &adjustments)?
-    } else {
-        match read_file_mapped(&source_path) {
-            Ok(mmap) => image_loader::load_and_composite(
-                &mmap,
-                &source_path_str,
-                &adjustments,
-                true,
-                highlight_compression,
-            )?,
-            Err(e) => {
-                log::warn!(
-                    "Failed to memory-map file '{}': {}. Falling back to standard read.",
-                    source_path_str,
-                    e
-                );
-                let file_bytes = fs::read(&source_path).map_err(|io_err| {
-                    anyhow::anyhow!("Fallback read failed for {}: {}", source_path_str, io_err)
-                })?;
-                image_loader::load_and_composite(
-                    &file_bytes,
-                    &source_path_str,
-                    &adjustments,
-                    true,
-                    highlight_compression,
-                )?
-            }
-        }
-    };
-
     if let (Some(context), Some(meta)) = (gpu_context, metadata) {
         if !meta.adjustments.is_null() {
             let state = app_handle.state::<AppState>();
             const THUMBNAIL_PROCESSING_DIM: u32 = 1280;
-            let orientation_steps =
-                meta.adjustments["orientationSteps"].as_u64().unwrap_or(0) as u8;
-            let coarse_rotated_image = apply_coarse_rotation(composite_image, orientation_steps);
-            let (full_w, full_h) = coarse_rotated_image.dimensions();
 
-            let (processing_base, scale_for_gpu) =
-                if full_w > THUMBNAIL_PROCESSING_DIM || full_h > THUMBNAIL_PROCESSING_DIM {
+            let geometry_hash = calculate_geometry_hash(&meta.adjustments);
+            let cached_base: Option<(DynamicImage, f32)> = {
+                let cache = state.thumbnail_geometry_cache.lock().unwrap();
+                if let Some((cached_hash, img, scale)) = cache.get(path_str) {
+                    if *cached_hash == geometry_hash {
+                        Some((img.clone(), *scale))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            let (processing_base, scale_for_gpu) = if let Some(hit) = cached_base {
+                hit
+            } else {
+                
+                let settings = crate::file_management::load_settings(app_handle.clone()).unwrap_or_default();
+                let highlight_compression = settings.raw_highlight_compression.unwrap_or(2.5);
+
+                let composite_image = if let Some(img) = preloaded_image {
+                    image_loader::composite_patches_on_image(img, &adjustments)?
+                } else {
+                    match read_file_mapped(&source_path) {
+                        Ok(mmap) => image_loader::load_and_composite(
+                            &mmap,
+                            &source_path_str,
+                            &adjustments,
+                            true,
+                            highlight_compression,
+                        )?,
+                        Err(_) => {
+                            let file_bytes = fs::read(&source_path).map_err(|io_err| {
+                                anyhow::anyhow!("Fallback read failed for {}: {}", source_path_str, io_err)
+                            })?;
+                            image_loader::load_and_composite(
+                                &file_bytes,
+                                &source_path_str,
+                                &adjustments,
+                                true,
+                                highlight_compression,
+                            )?
+                        }
+                    }
+                };
+
+                let warped_image = apply_geometry_warp(&composite_image, &meta.adjustments);
+                let orientation_steps = meta.adjustments["orientationSteps"].as_u64().unwrap_or(0) as u8;
+                let coarse_rotated_image = apply_coarse_rotation(warped_image, orientation_steps);
+                
+                let (full_w, full_h) = coarse_rotated_image.dimensions();
+
+                let (base, scale) = if full_w > THUMBNAIL_PROCESSING_DIM || full_h > THUMBNAIL_PROCESSING_DIM {
                     let base = crate::image_processing::downscale_f32_image(
                         &coarse_rotated_image,
                         THUMBNAIL_PROCESSING_DIM,
@@ -794,17 +809,21 @@ pub fn generate_thumbnail_data(
                     (coarse_rotated_image.clone(), 1.0)
                 };
 
+                let mut cache = state.thumbnail_geometry_cache.lock().unwrap();
+                if cache.len() > 30 { cache.clear(); }
+                cache.insert(path_str.to_string(), (geometry_hash, base.clone(), scale));
+
+                (base, scale)
+            };
+            
             let rotation_degrees = meta.adjustments["rotation"].as_f64().unwrap_or(0.0) as f32;
-            let flip_horizontal = meta.adjustments["flipHorizontal"]
-                .as_bool()
-                .unwrap_or(false);
+            let flip_horizontal = meta.adjustments["flipHorizontal"].as_bool().unwrap_or(false);
             let flip_vertical = meta.adjustments["flipVertical"].as_bool().unwrap_or(false);
 
             let flipped_image = apply_flip(processing_base, flip_horizontal, flip_vertical);
             let rotated_image = apply_rotation(&flipped_image, rotation_degrees);
 
-            let crop_data: Option<Crop> =
-                serde_json::from_value(meta.adjustments["crop"].clone()).ok();
+            let crop_data: Option<Crop> = serde_json::from_value(meta.adjustments["crop"].clone()).ok();
             let scaled_crop_json = if let Some(c) = &crop_data {
                 serde_json::to_value(Crop {
                     x: c.x * scale_for_gpu as f64,
@@ -819,7 +838,6 @@ pub fn generate_thumbnail_data(
 
             let cropped_preview = apply_crop(rotated_image, &scaled_crop_json);
             let (preview_w, preview_h) = cropped_preview.dimensions();
-
             let unscaled_crop_offset = crop_data.map_or((0.0, 0.0), |c| (c.x as f32, c.y as f32));
 
             let mask_definitions: Vec<MaskDefinition> = meta
@@ -831,7 +849,8 @@ pub fn generate_thumbnail_data(
             let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
                 .iter()
                 .filter_map(|def| {
-                    generate_mask_bitmap(
+                    crate::get_cached_or_generate_mask(
+                        &state,
                         def,
                         preview_w,
                         preview_h,
@@ -881,7 +900,33 @@ pub fn generate_thumbnail_data(
         }
     }
 
-    let mut final_image = composite_image;
+    let settings = crate::file_management::load_settings(app_handle.clone()).unwrap_or_default();
+    let highlight_compression = settings.raw_highlight_compression.unwrap_or(2.5);
+
+    let mut final_image = if let Some(img) = preloaded_image {
+        image_loader::composite_patches_on_image(img, &adjustments)?
+    } else {
+         match read_file_mapped(&source_path) {
+            Ok(mmap) => image_loader::load_and_composite(
+                &mmap,
+                &source_path_str,
+                &adjustments,
+                true,
+                highlight_compression,
+            )?,
+            Err(e) => {
+                log::warn!("Fallback read for {}: {}", source_path_str, e);
+                let bytes = fs::read(&source_path)?;
+                image_loader::load_and_composite(
+                    &bytes,
+                    &source_path_str,
+                    &adjustments,
+                    true,
+                    highlight_compression,
+                )?
+            }
+        }
+    };
 
     if is_raw && adjustments.is_null() {
         apply_cpu_default_raw_processing(&mut final_image);
@@ -2235,32 +2280,7 @@ pub async fn import_files(
                     return Err(format!("Source file not found: {}", source_path_str));
                 }
 
-                let file_date: DateTime<Utc> = Metadata::new_from_path(&source_path)
-                    .ok()
-                    .and_then(|metadata| {
-                        metadata
-                            .get_tag(&ExifTag::DateTimeOriginal("".to_string()))
-                            .next()
-                            .and_then(|tag| {
-                                if let &ExifTag::DateTimeOriginal(ref dt_str) = tag {
-                                    chrono::NaiveDateTime::parse_from_str(
-                                        dt_str,
-                                        "%Y:%m:%d %H:%M:%S",
-                                    )
-                                    .ok()
-                                    .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc))
-                                } else {
-                                    None
-                                }
-                            })
-                    })
-                    .unwrap_or_else(|| {
-                        fs::metadata(&source_path)
-                            .ok()
-                            .and_then(|m| m.created().ok())
-                            .map(DateTime::<Utc>::from)
-                            .unwrap_or_else(Utc::now)
-                    });
+                let file_date = exif_processing::get_creation_date_from_path(&source_path);
 
                 let mut final_dest_folder = PathBuf::from(&destination_folder);
                 if settings.organize_by_date {
@@ -2386,29 +2406,7 @@ pub fn rename_files(paths: Vec<String>, name_template: String) -> Result<Vec<Str
         let parent = original_path.parent().ok_or("Could not get parent directory")?;
         let extension = original_path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-        let file_date: DateTime<Utc> = Metadata::new_from_path(&original_path)
-            .ok()
-            .and_then(|metadata| {
-                metadata
-                    .get_tag(&ExifTag::DateTimeOriginal("".to_string()))
-                    .next()
-                    .and_then(|tag| {
-                        if let &ExifTag::DateTimeOriginal(ref dt_str) = tag {
-                            chrono::NaiveDateTime::parse_from_str(dt_str, "%Y:%m:%d %H:%M:%S")
-                                .ok()
-                                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc))
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .unwrap_or_else(|| {
-                fs::metadata(&original_path)
-                    .ok()
-                    .and_then(|m| m.created().ok())
-                    .map(DateTime::<Utc>::from)
-                    .unwrap_or_else(Utc::now)
-            });
+        let file_date = exif_processing::get_creation_date_from_path(&original_path);
 
         let new_stem = generate_filename_from_template(
             &name_template,

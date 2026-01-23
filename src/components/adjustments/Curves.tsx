@@ -21,9 +21,10 @@ interface ColorData {
 interface CurveGraphProps {
   adjustments: Adjustments;
   histogram: ChannelConfig | null;
-  isMasksView?: boolean;
+  isForMask?: boolean;
   setAdjustments(updater: (prev: any) => any): void;
   theme: string;
+  onDragStateChange?: (isDragging: boolean) => void;
 }
 
 function getCurvePath(points: Array<Coord>) {
@@ -127,37 +128,131 @@ function getZeroHistogramPath(data: Array<any>) {
   return `M0,255 L${pathData} L255,255 Z`;
 }
 
-export default function CurveGraph({ adjustments, setAdjustments, histogram, theme, isMasksView }: CurveGraphProps) {
+export default function CurveGraph({
+  adjustments,
+  setAdjustments,
+  histogram,
+  theme,
+  isForMask,
+  onDragStateChange,
+}: CurveGraphProps) {
   const [activeChannel, setActiveChannel] = useState<ActiveChannel>(ActiveChannel.Luma);
   const [draggingPointIndex, setDraggingPointIndex] = useState<number | null>(null);
   const [localPoints, setLocalPoints] = useState<Array<Coord> | null>(null);
+  const [isHovered, setIsHovered] = useState(false);
+  
+  const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const activeChannelRef = useRef(activeChannel);
+  const draggingIndexRef = useRef<number | null>(null);
+  const localPointsRef = useRef<Array<Coord> | null>(null);
+  const propPointsRef = useRef<Array<Coord> | undefined>(undefined);
+  const isHoveredRef = useRef(false);
 
   useEffect(() => {
-    if (draggingPointIndex === null) {
-      setLocalPoints(null);
-    }
-  }, [adjustments?.curves?.[activeChannel]]);
-
-  useEffect(() => {
+    activeChannelRef.current = activeChannel;
     setLocalPoints(null);
     setDraggingPointIndex(null);
   }, [activeChannel]);
 
   useEffect(() => {
-    const moveHandler = (e: any) => handleMouseMove(e);
-    const upHandler = () => handleMouseUp();
+    propPointsRef.current = adjustments?.curves?.[activeChannel];
+  }, [adjustments?.curves, activeChannel]);
+
+  useEffect(() => {
+    if (draggingPointIndex === null) {
+      setLocalPoints(null);
+      localPointsRef.current = null;
+    }
+  }, [adjustments?.curves?.[activeChannel], draggingPointIndex]);
+
+  useEffect(() => {
+    const isDragging = draggingPointIndex !== null;
+    onDragStateChange?.(isDragging);
+    draggingIndexRef.current = draggingPointIndex;
+  }, [draggingPointIndex, onDragStateChange]);
+
+  // Robust hover detection using global coordinates to handle scrollbar/overflow issues
+  useEffect(() => {
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (!containerRef.current) return;
+      
+      const rect = containerRef.current.getBoundingClientRect();
+      
+      const isInside =
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+
+      // Only update state if the boolean value actually changes to prevent re-renders
+      if (isInside !== isHoveredRef.current) {
+        isHoveredRef.current = isInside;
+        setIsHovered(isInside);
+      }
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove, { passive: true });
+    
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: any) => {
+      const index = draggingIndexRef.current;
+      if (index === null) return;
+
+      const currentPoints = localPointsRef.current || propPointsRef.current;
+      if (!currentPoints) return;
+
+      const svg = svgRef.current;
+      if (!svg) return;
+      
+      const rect = svg.getBoundingClientRect();
+      let x = Math.max(0, Math.min(255, ((e.clientX - rect.left) / rect.width) * 255));
+      const y = Math.max(0, Math.min(255, 255 - ((e.clientY - rect.top) / rect.height) * 255));
+
+      const newPoints = [...currentPoints];
+      const isEndPoint = index === 0 || index === currentPoints.length - 1;
+
+      if (isEndPoint) {
+        x = newPoints[index].x;
+      } else {
+        const prevX = currentPoints[index - 1].x;
+        const nextX = currentPoints[index + 1].x;
+        x = Math.max(prevX + 0.01, Math.min(nextX - 0.01, x));
+      }
+
+      newPoints[index] = { x, y };
+
+      localPointsRef.current = newPoints;
+      setLocalPoints(newPoints);
+
+      setAdjustments((prev: Adjustments) => ({
+        ...prev,
+        curves: { ...prev.curves, [activeChannelRef.current]: newPoints },
+      }));
+    };
+
+    const handleMouseUp = () => {
+      setDraggingPointIndex(null);
+      draggingIndexRef.current = null;
+      localPointsRef.current = null;
+      onDragStateChange?.(false);
+    };
 
     if (draggingPointIndex !== null) {
-      window.addEventListener('mousemove', moveHandler);
-      window.addEventListener('mouseup', upHandler);
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
     }
 
     return () => {
-      window.removeEventListener('mousemove', moveHandler);
-      window.removeEventListener('mouseup', upHandler);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [draggingPointIndex, localPoints, adjustments?.curves, activeChannel, setAdjustments]);
+  }, [draggingPointIndex, setAdjustments, onDragStateChange]);
 
   const isLightTheme = theme === Theme.Light || theme === Theme.Arctic;
   const histogramOpacity = isLightTheme ? 0.6 : 0.15;
@@ -201,40 +296,14 @@ export default function CurveGraph({ adjustments, setAdjustments, histogram, the
 
   const handlePointMouseDown = (e: any, index: number) => {
     e.preventDefault();
+    e.stopPropagation();
+    
+    onDragStateChange?.(true);
+
     setLocalPoints(points);
+    localPointsRef.current = points;
     setDraggingPointIndex(index);
-  };
-
-  const handleMouseMove = (e: any) => {
-    if (draggingPointIndex === null) {
-      return;
-    }
-
-    let { x, y } = getMousePos(e);
-
-    const newPoints = [...points];
-    const isEndPoint = draggingPointIndex === 0 || draggingPointIndex === points.length - 1;
-
-    if (isEndPoint) {
-      x = newPoints[draggingPointIndex].x;
-    } else {
-      const prevX = points[draggingPointIndex - 1].x;
-      const nextX = points[draggingPointIndex + 1].x;
-      x = Math.max(prevX + 0.01, Math.min(nextX - 0.01, x));
-    }
-
-    newPoints[draggingPointIndex] = { x, y };
-
-    setLocalPoints(newPoints);
-
-    setAdjustments((prev: Adjustments) => ({
-      ...prev,
-      curves: { ...prev.curves, [activeChannel]: newPoints },
-    }));
-  };
-
-  const handleMouseUp = () => {
-    setDraggingPointIndex(null);
+    draggingIndexRef.current = index;
   };
 
   const handleContainerMouseDown = (e: any) => {
@@ -242,17 +311,22 @@ export default function CurveGraph({ adjustments, setAdjustments, histogram, the
       return;
     }
 
+    onDragStateChange?.(true);
+
     const { x, y } = getMousePos(e);
     const newPoints = [...points, { x, y }].sort((a: Coord, b: Coord) => a.x - b.x);
     const newPointIndex = newPoints.findIndex((p: Coord) => p.x === x && p.y === y);
 
     setLocalPoints(newPoints);
+    localPointsRef.current = newPoints;
+    
     setAdjustments((prev: Adjustments) => ({
       ...prev,
       curves: { ...prev.curves, [activeChannel]: newPoints },
     }));
 
     setDraggingPointIndex(newPointIndex);
+    draggingIndexRef.current = newPointIndex;
   };
 
   const handleDoubleClick = () => {
@@ -268,8 +342,14 @@ export default function CurveGraph({ adjustments, setAdjustments, histogram, the
     }));
   };
 
+  // We consider the control hovered if the mouse is inside OR if the user is currently dragging a point
+  const shouldShowControls = adjustments.showClipping || isHovered || draggingPointIndex !== null;
+
   return (
-    <div className="select-none">
+    <div 
+      className="select-none" 
+      ref={containerRef}
+    >
       <div className="flex items-center justify-between gap-1 mb-2 mt-2">
         <div className="flex items-center gap-1">
           {Object.keys(channelConfig).map((channel: any) => (
@@ -294,14 +374,15 @@ export default function CurveGraph({ adjustments, setAdjustments, histogram, the
             </button>
           ))}
         </div>
-        {!isMasksView && (
+        {!isForMask && (
           <button
             className={clsx(
-              'w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center transition-all opacity-0 group-hover:opacity-100',
+              'w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center transition-all',
               {
-                'ring-2 ring-offset-2 ring-offset-surface ring-accent bg-accent text-button-text !opacity-100':
+                'opacity-100 ring-2 ring-offset-2 ring-offset-surface ring-accent bg-accent text-button-text':
                   adjustments.showClipping,
-                'bg-surface-secondary text-text-primary': !adjustments.showClipping,
+                'opacity-100 bg-surface-secondary text-text-primary': !adjustments.showClipping && shouldShowControls,
+                'opacity-0': !adjustments.showClipping && !shouldShowControls,
               },
             )}
             key="clipping"

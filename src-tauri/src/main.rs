@@ -5,9 +5,10 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod ai_processing;
-mod comfyui_connector;
+mod ai_connector;
 mod culling;
 mod denoising;
+mod exif_processing;
 mod file_management;
 mod formats;
 mod gpu_processing;
@@ -35,17 +36,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::io::Write;
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Sender, Receiver};
 
 use base64::{Engine as _, engine::general_purpose};
-use chrono::{DateTime, Utc};
 use image::codecs::jpeg::JpegEncoder;
 use image::{
     DynamicImage, GenericImageView, GrayImage, ImageBuffer, ImageFormat, Luma, Rgb, RgbImage, Rgba,
     RgbaImage, imageops,
 };
-use little_exif::exif_tag::ExifTag;
-use little_exif::filetype::FileExtension;
-use little_exif::metadata::Metadata;
+use imageproc::drawing::draw_line_segment_mut;
+use imageproc::edges::canny;
+use imageproc::hough::{detect_lines, LineDetectionOptions};
 use rayon::prelude::*;
 use reqwest;
 use serde::{Deserialize, Serialize};
@@ -71,8 +72,8 @@ use crate::image_loader::{
 };
 use crate::image_processing::{
     Crop, GpuContext, ImageMetadata, apply_coarse_rotation, apply_crop, apply_flip, apply_rotation,
-    get_all_adjustments_from_json, get_or_init_gpu_context, process_and_get_dynamic_image,
-    downscale_f32_image, apply_cpu_default_raw_processing,
+    get_all_adjustments_from_json, get_or_init_gpu_context, process_and_get_dynamic_image, apply_unwarp_geometry,
+    downscale_f32_image, apply_cpu_default_raw_processing, GeometryParams, warp_image_geometry, apply_geometry_warp
 };
 use crate::lut_processing::Lut;
 use crate::mask_generation::{AiPatchDefinition, MaskDefinition, generate_mask_bitmap};
@@ -88,6 +89,7 @@ pub struct LoadedImage {
 #[derive(Clone)]
 pub struct CachedPreview {
     image: DynamicImage,
+    small_image: DynamicImage,
     transform_hash: u64,
     scale: f32,
     unscaled_crop_offset: (f32, f32),
@@ -101,11 +103,23 @@ pub struct GpuImageCache {
     pub transform_hash: u64,
 }
 
+pub struct GpuProcessorState {
+    pub processor: crate::gpu_processing::GpuProcessor,
+    pub width: u32,
+    pub height: u32,
+}
+
+struct PreviewJob {
+    adjustments: serde_json::Value,
+    is_interactive: bool,
+}
+
 pub struct AppState {
     original_image: Mutex<Option<LoadedImage>>,
     cached_preview: Mutex<Option<CachedPreview>>,
     gpu_context: Mutex<Option<GpuContext>>,
     gpu_image_cache: Mutex<Option<GpuImageCache>>,
+    gpu_processor: Mutex<Option<GpuProcessorState>>,
     ai_state: Mutex<Option<AiState>>,
     ai_init_lock: TokioMutex<()>,
     export_task_handle: Mutex<Option<JoinHandle<()>>>,
@@ -115,6 +129,11 @@ pub struct AppState {
     pub lut_cache: Mutex<HashMap<String, Arc<Lut>>>,
     initial_file_path: Mutex<Option<String>>,
     thumbnail_cancellation_token: Arc<AtomicBool>,
+    preview_worker_tx: Mutex<Option<Sender<PreviewJob>>>,
+    pub mask_cache: Mutex<HashMap<u64, GrayImage>>,
+    pub patch_cache: Mutex<HashMap<String, serde_json::Value>>,
+    pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>, 
+    pub thumbnail_geometry_cache: Mutex<HashMap<String, (u64, DynamicImage, f32)>>,
 }
 
 #[derive(serde::Serialize)]
@@ -202,12 +221,14 @@ fn apply_all_transformations(
 ) -> (DynamicImage, (f32, f32)) {
     let start_time = std::time::Instant::now();
 
+    let warped_image = apply_geometry_warp(image, adjustments);
+
     let orientation_steps = adjustments["orientationSteps"].as_u64().unwrap_or(0) as u8;
     let rotation_degrees = adjustments["rotation"].as_f64().unwrap_or(0.0) as f32;
     let flip_horizontal = adjustments["flipHorizontal"].as_bool().unwrap_or(false);
     let flip_vertical = adjustments["flipVertical"].as_bool().unwrap_or(false);
 
-    let coarse_rotated_image = apply_coarse_rotation(image.clone(), orientation_steps);
+    let coarse_rotated_image = apply_coarse_rotation(warped_image, orientation_steps);
     let flipped_image = apply_flip(coarse_rotated_image, flip_horizontal, flip_vertical);
     let rotated_image = apply_rotation(&flipped_image, rotation_degrees);
 
@@ -220,6 +241,53 @@ fn apply_all_transformations(
     let duration = start_time.elapsed();
     log::info!("apply_all_transformations took: {:?}", duration);
     (cropped_image, unscaled_crop_offset)
+}
+
+pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+
+    if let Some(patches) = adjustments.get("aiPatches") {
+        patches.to_string().hash(&mut hasher);
+    }
+
+    adjustments["orientationSteps"].as_u64().hash(&mut hasher);
+
+    let geo_keys = [
+        "transformDistortion", "transformVertical", "transformHorizontal",
+        "transformRotate", "transformAspect", "transformScale", 
+        "transformXOffset", "transformYOffset"
+    ];
+
+    for key in geo_keys {
+        if let Some(val) = adjustments.get(key) {
+            val.to_string().hash(&mut hasher); 
+        }
+    }
+
+    hasher.finish()
+}
+
+fn calculate_visual_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+
+    if let Some(obj) = adjustments.as_object() {
+        for (key, value) in obj {
+            match key.as_str() {
+                "transformDistortion" | "transformVertical" | "transformHorizontal" | "transformRotate" |
+                "transformAspect" | "transformScale" | "transformXOffset" | "transformYOffset" => (),
+
+                "crop" | "rotation" | "orientationSteps" | "flipHorizontal" | "flipVertical" => (),
+
+                _ => {
+                    key.hash(&mut hasher);
+                    value.to_string().hash(&mut hasher);
+                }
+            }
+        }
+    }
+
+    hasher.finish()
 }
 
 fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
@@ -242,6 +310,23 @@ fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
             crop_val.to_string().hash(&mut hasher);
         }
     }
+
+    let transform_distortion = adjustments["transformDistortion"].as_f64().unwrap_or(0.0);
+    (transform_distortion.to_bits()).hash(&mut hasher);
+    let transform_vertical = adjustments["transformVertical"].as_f64().unwrap_or(0.0);
+    (transform_vertical.to_bits()).hash(&mut hasher);
+    let transform_horizontal = adjustments["transformHorizontal"].as_f64().unwrap_or(0.0);
+    (transform_horizontal.to_bits()).hash(&mut hasher);
+    let transform_rotate = adjustments["transformRotate"].as_f64().unwrap_or(0.0);
+    (transform_rotate.to_bits()).hash(&mut hasher);
+    let transform_aspect = adjustments["transformAspect"].as_f64().unwrap_or(0.0);
+    (transform_aspect.to_bits()).hash(&mut hasher);
+    let transform_scale = adjustments["transformScale"].as_f64().unwrap_or(100.0);
+    (transform_scale.to_bits()).hash(&mut hasher);
+    let transform_x_offset = adjustments["transformXOffset"].as_f64().unwrap_or(0.0);
+    (transform_x_offset.to_bits()).hash(&mut hasher);
+    let transform_y_offset = adjustments["transformYOffset"].as_f64().unwrap_or(0.0);
+    (transform_y_offset.to_bits()).hash(&mut hasher);
 
     if let Some(patches_val) = adjustments.get("aiPatches") {
         if let Some(patches_arr) = patches_val.as_array() {
@@ -304,6 +389,53 @@ fn calculate_full_job_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
     hasher.finish()
 }
 
+fn hydrate_adjustments(state: &tauri::State<AppState>, adjustments: &mut serde_json::Value) {
+    let mut cache = state.patch_cache.lock().unwrap();
+
+    if let Some(patches) = adjustments.get_mut("aiPatches").and_then(|v| v.as_array_mut()) {
+        for patch in patches {
+            let id = patch.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            if id.is_empty() { continue; }
+
+            let has_data = patch.get("patchData").map_or(false, |v| !v.is_null());
+
+            if has_data {
+                if let Some(data) = patch.get("patchData") {
+                    cache.insert(id.clone(), data.clone());
+                }
+            } else {
+                if let Some(cached_data) = cache.get(&id) {
+                    patch["patchData"] = cached_data.clone();
+                }
+            }
+        }
+    }
+
+    if let Some(masks) = adjustments.get_mut("masks").and_then(|v| v.as_array_mut()) {
+        for mask_container in masks {
+            if let Some(sub_masks) = mask_container.get_mut("subMasks").and_then(|v| v.as_array_mut()) {
+                for sub_mask in sub_masks {
+                    let id = sub_mask.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    if id.is_empty() { continue; }
+
+                    if let Some(params) = sub_mask.get_mut("parameters").and_then(|p| p.as_object_mut()) {
+                        if params.contains_key("mask_data_base64") {
+                            let val = params.get("mask_data_base64").unwrap();
+                            if !val.is_null() {
+                                cache.insert(id.clone(), val.clone());
+                            } else {
+                                if let Some(cached_data) = cache.get(&id) {
+                                    params.insert("mask_data_base64".to_string(), cached_data.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn generate_transformed_preview(
     loaded_image: &LoadedImage,
     adjustments: &serde_json::Value,
@@ -348,20 +480,6 @@ fn encode_to_base64_png(image: &GrayImage) -> Result<String, String> {
     Ok(format!("data:image/png;base64,{}", base64_str))
 }
 
-fn read_exif_data(file_bytes: &[u8]) -> HashMap<String, String> {
-    let mut exif_data = HashMap::new();
-    let exif_reader = exif::Reader::new();
-    if let Ok(exif) = exif_reader.read_from_container(&mut Cursor::new(file_bytes)) {
-        for field in exif.fields() {
-            exif_data.insert(
-                field.tag.to_string(),
-                field.display_value().with_unit(&exif).to_string(),
-            );
-        }
-    }
-    exif_data
-}
-
 fn get_or_load_lut(state: &tauri::State<AppState>, path: &str) -> Result<Arc<Lut>, String> {
     let mut cache = state.lut_cache.lock().unwrap();
     if let Some(lut) = cache.get(path) {
@@ -401,7 +519,7 @@ async fn load_image(
                     let img =
                         load_base_image_from_bytes(&mmap, &path_clone, false, highlight_compression)
                             .map_err(|e| e.to_string())?;
-                    let exif = read_exif_data(&mmap);
+                    let exif = exif_processing::read_exif_data(&path_clone, &mmap);
                     Ok((img, exif))
                 }
                 Err(e) => {
@@ -420,7 +538,7 @@ async fn load_image(
                         highlight_compression,
                     )
                     .map_err(|e| e.to_string())?;
-                    let exif = read_exif_data(&bytes);
+                    let exif = exif_processing::read_exif_data(&path_clone, &bytes);
                     Ok((img, exif))
                 }
             }
@@ -435,6 +553,10 @@ async fn load_image(
 
     *state.cached_preview.lock().unwrap() = None;
     *state.gpu_image_cache.lock().unwrap() = None;
+    state.mask_cache.lock().unwrap().clear();
+    state.patch_cache.lock().unwrap().clear();
+    state.geometry_cache.lock().unwrap().clear();
+
     *state.original_image.lock().unwrap() = Some(LoadedImage {
         path: source_path_str.clone(),
         image: pristine_img,
@@ -527,29 +649,75 @@ fn apply_watermark(
     Ok(())
 }
 
-#[tauri::command]
-fn apply_adjustments(
-    js_adjustments: serde_json::Value,
+pub fn get_cached_or_generate_mask(
+    state: &tauri::State<AppState>,
+    def: &MaskDefinition,
+    width: u32,
+    height: u32,
+    scale: f32,
+    crop_offset: (f32, f32),
+) -> Option<GrayImage> {
+    let mut hasher = DefaultHasher::new();
+    
+    let def_json = serde_json::to_string(&def).unwrap_or_default();
+    def_json.hash(&mut hasher);
+    
+    width.hash(&mut hasher);
+    height.hash(&mut hasher);
+    scale.to_bits().hash(&mut hasher);
+    crop_offset.0.to_bits().hash(&mut hasher);
+    crop_offset.1.to_bits().hash(&mut hasher);
+    
+    let key = hasher.finish();
+
+    {
+        let cache = state.mask_cache.lock().unwrap();
+        if let Some(img) = cache.get(&key) {
+            return Some(img.clone());
+        }
+    }
+
+    let generated = generate_mask_bitmap(def, width, height, scale, crop_offset);
+
+    if let Some(img) = &generated {
+        let mut cache = state.mask_cache.lock().unwrap();
+        if cache.len() > 50 {
+            cache.clear(); 
+        }
+        cache.insert(key, img.clone());
+    }
+
+    generated
+}
+
+fn process_preview_job(
+    app_handle: &tauri::AppHandle,
     state: tauri::State<AppState>,
-    app_handle: tauri::AppHandle,
+    job: PreviewJob,
 ) -> Result<(), String> {
     let context = get_or_init_gpu_context(&state)?;
-    let adjustments_clone = js_adjustments.clone();
-    let loaded_image = state
-        .original_image
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or("No original image loaded")?;
+    let mut adjustments_json = job.adjustments;
+    hydrate_adjustments(&state, &mut adjustments_json);
+    let adjustments_clone = adjustments_json;
+
+    let loaded_image_guard = state.original_image.lock().unwrap();
+    let loaded_image = loaded_image_guard.as_ref().ok_or("No original image loaded")?.clone();
+    drop(loaded_image_guard);
+
     let new_transform_hash = calculate_transform_hash(&adjustments_clone);
+    let settings = load_settings(app_handle.clone()).unwrap_or_default();
+    let hq_live = settings.enable_high_quality_live_previews.unwrap_or(false);
+    let interactive_divisor = if hq_live { 1.5 } else { 2.0 };
+    let interactive_quality = if hq_live { 75 } else { 45 };
 
     let mut cached_preview_lock = state.cached_preview.lock().unwrap();
 
-    let (final_preview_base, scale_for_gpu, unscaled_crop_offset) =
+    let (final_preview_base, small_preview_base, scale_for_gpu, unscaled_crop_offset) =
         if let Some(cached) = &*cached_preview_lock {
             if cached.transform_hash == new_transform_hash {
                 (
                     cached.image.clone(),
+                    cached.small_image.clone(),
                     cached.scale,
                     cached.unscaled_crop_offset,
                 )
@@ -557,94 +725,172 @@ fn apply_adjustments(
                 *state.gpu_image_cache.lock().unwrap() = None;
                 let (base, scale, offset) =
                     generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?;
+
+                let final_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
+                let target_size = (final_preview_dim as f32 / interactive_divisor) as u32;
+
+                let (w, h) = base.dimensions();
+                let (small_w, small_h) = if w > h {
+                    let ratio = h as f32 / w as f32;
+                    (target_size, (target_size as f32 * ratio) as u32)
+                } else {
+                    let ratio = w as f32 / h as f32;
+                    ((target_size as f32 * ratio) as u32, target_size)
+                };
+                let small_base = image_processing::downscale_f32_image(&base, small_w, small_h);
+
                 *cached_preview_lock = Some(CachedPreview {
                     image: base.clone(),
+                    small_image: small_base.clone(),
                     transform_hash: new_transform_hash,
                     scale,
                     unscaled_crop_offset: offset,
                 });
-                (base, scale, offset)
+                (base, small_base, scale, offset)
             }
         } else {
             *state.gpu_image_cache.lock().unwrap() = None;
             let (base, scale, offset) =
                 generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?;
+
+            let final_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
+            let target_size = (final_preview_dim as f32 / interactive_divisor) as u32;
+
+            let (w, h) = base.dimensions();
+            let (small_w, small_h) = if w > h {
+                let ratio = h as f32 / w as f32;
+                (target_size, (target_size as f32 * ratio) as u32)
+            } else {
+                let ratio = w as f32 / h as f32;
+                ((target_size as f32 * ratio) as u32, target_size)
+            };
+            let small_base = image_processing::downscale_f32_image(&base, small_w, small_h);
+
             *cached_preview_lock = Some(CachedPreview {
                 image: base.clone(),
+                small_image: small_base.clone(),
                 transform_hash: new_transform_hash,
                 scale,
                 unscaled_crop_offset: offset,
             });
-            (base, scale, offset)
+            (base, small_base, scale, offset)
         };
 
     drop(cached_preview_lock);
 
-    thread::spawn(move || {
-        let state = app_handle.state::<AppState>();
-        let (preview_width, preview_height) = final_preview_base.dimensions();
-        let is_raw = loaded_image.is_raw;
+    let (processing_image, effective_scale, jpeg_quality) = if job.is_interactive {
+        let orig_w = final_preview_base.width() as f32;
+        let small_w = small_preview_base.width() as f32;
+        let scale_factor = if orig_w > 0.0 { small_w / orig_w } else { 1.0 };
+        let new_scale = scale_for_gpu * scale_factor;
+        (small_preview_base, new_scale, interactive_quality)
+    } else {
+        (final_preview_base, scale_for_gpu, 90)
+    };
 
-        let mask_definitions: Vec<MaskDefinition> = js_adjustments
-            .get("masks")
-            .and_then(|m| serde_json::from_value(m.clone()).ok())
-            .unwrap_or_else(Vec::new);
+    let (preview_width, preview_height) = processing_image.dimensions();
 
-        let scaled_crop_offset = (
-            unscaled_crop_offset.0 * scale_for_gpu,
-            unscaled_crop_offset.1 * scale_for_gpu,
-        );
+    let mask_definitions: Vec<MaskDefinition> = adjustments_clone
+        .get("masks")
+        .and_then(|m| serde_json::from_value(m.clone()).ok())
+        .unwrap_or_else(Vec::new);
 
-        let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
-            .iter()
-            .filter_map(|def| {
-                generate_mask_bitmap(
-                    def,
-                    preview_width,
-                    preview_height,
-                    scale_for_gpu,
-                    scaled_crop_offset,
-                )
-            })
-            .collect();
+    let scaled_crop_offset = (
+        unscaled_crop_offset.0 * effective_scale,
+        unscaled_crop_offset.1 * effective_scale,
+    );
 
-        let final_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
-        let lut_path = adjustments_clone["lutPath"].as_str();
-        let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
+    let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
+        .iter()
+        .filter_map(|def| {
+            get_cached_or_generate_mask(
+                &state,
+                def,
+                preview_width,
+                preview_height,
+                effective_scale,
+                scaled_crop_offset,
+            )
+        })
+        .collect();
 
-        if let Ok(final_processed_image) = process_and_get_dynamic_image(
-            &context,
-            &state,
-            &final_preview_base,
-            new_transform_hash,
-            final_adjustments,
-            &mask_bitmaps,
-            lut,
-            "apply_adjustments",
-        ) {
+    let is_raw = loaded_image.is_raw;
+    let final_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
+    let lut_path = adjustments_clone["lutPath"].as_str();
+    let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
+
+    let final_processed_image_result = process_and_get_dynamic_image(
+        &context,
+        &state,
+        &processing_image,
+        new_transform_hash,
+        final_adjustments,
+        &mask_bitmaps,
+        lut,
+        "apply_adjustments",
+    );
+
+    if let Ok(final_processed_image) = final_processed_image_result {
+        if !job.is_interactive {
             if let Ok(histogram_data) =
                 image_processing::calculate_histogram_from_image(&final_processed_image)
             {
                 let _ = app_handle.emit("histogram-update", histogram_data);
             }
-
             if let Ok(waveform_data) =
                 image_processing::calculate_waveform_from_image(&final_processed_image)
             {
                 let _ = app_handle.emit("waveform-update", waveform_data);
             }
+        }
 
-            let mut buf = Cursor::new(Vec::new());
-            if final_processed_image
-                .to_rgb8()
-                .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, 85))
-                .is_ok()
-            {
-                let _ = app_handle.emit("preview-update-final", buf.get_ref());
+        let mut buf = Cursor::new(Vec::new());
+        if final_processed_image
+            .to_rgb8()
+            .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, jpeg_quality))
+            .is_ok()
+        {
+            let _ = app_handle.emit("preview-update-final", buf.get_ref());
+        }
+    }
+
+    Ok(())
+}
+
+fn start_preview_worker(app_handle: tauri::AppHandle) {
+    let state = app_handle.state::<AppState>();
+    let (tx, rx): (Sender<PreviewJob>, Receiver<PreviewJob>) = mpsc::channel();
+    
+    *state.preview_worker_tx.lock().unwrap() = Some(tx);
+
+    std::thread::spawn(move || {
+        while let Ok(mut job) = rx.recv() {
+            while let Ok(next_job) = rx.try_recv() {
+                job = next_job;
+            }
+            
+            let state = app_handle.state::<AppState>();
+            if let Err(e) = process_preview_job(&app_handle, state, job) {
+                log::error!("Preview worker error: {}", e);
             }
         }
     });
+}
 
+#[tauri::command]
+fn apply_adjustments(
+    js_adjustments: serde_json::Value,
+    is_interactive: bool,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let tx_guard = state.preview_worker_tx.lock().unwrap();
+    if let Some(tx) = &*tx_guard {
+        let job = PreviewJob {
+            adjustments: js_adjustments,
+            is_interactive,
+        };
+        tx.send(job).map_err(|e| format!("Failed to send to preview worker: {}", e))?;
+    }
     Ok(())
 }
 
@@ -655,7 +901,9 @@ fn generate_uncropped_preview(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let context = get_or_init_gpu_context(&state)?;
-    let adjustments_clone = js_adjustments.clone();
+    let mut adjustments_clone = js_adjustments.clone();
+    hydrate_adjustments(&state, &mut adjustments_clone);
+
     let loaded_image = state
         .original_image
         .lock()
@@ -677,8 +925,10 @@ fn generate_uncropped_preview(
                 }
             };
 
+        let warped_image = apply_geometry_warp(&patched_image, &adjustments_clone);
+
         let orientation_steps = adjustments_clone["orientationSteps"].as_u64().unwrap_or(0) as u8;
-        let coarse_rotated_image = apply_coarse_rotation(patched_image, orientation_steps);
+        let coarse_rotated_image = apply_coarse_rotation(warped_image, orientation_steps);
 
         let settings = load_settings(app_handle.clone()).unwrap_or_default();
         let preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
@@ -700,7 +950,7 @@ fn generate_uncropped_preview(
 
         let (preview_width, preview_height) = processing_base.dimensions();
 
-        let mask_definitions: Vec<MaskDefinition> = js_adjustments
+        let mask_definitions: Vec<MaskDefinition> = adjustments_clone
             .get("masks")
             .and_then(|m| serde_json::from_value(m.clone()).ok())
             .unwrap_or_else(Vec::new);
@@ -708,7 +958,8 @@ fn generate_uncropped_preview(
         let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
             .iter()
             .filter_map(|def| {
-                generate_mask_bitmap(
+                get_cached_or_generate_mask(
+                    &state,
                     def,
                     preview_width,
                     preview_height,
@@ -759,13 +1010,16 @@ fn generate_original_transformed_preview(
         .clone()
         .ok_or("No original image loaded")?;
 
+    let mut adjustments_clone = js_adjustments.clone();
+    hydrate_adjustments(&state, &mut adjustments_clone);
+
     let mut image_for_preview = loaded_image.image.clone();
     if loaded_image.is_raw {
         apply_cpu_default_raw_processing(&mut image_for_preview);
     }
 
     let (transformed_full_res, _unscaled_crop_offset) =
-        apply_all_transformations(&image_for_preview, &js_adjustments);
+        apply_all_transformations(&image_for_preview, &adjustments_clone);
 
     let settings = load_settings(app_handle).unwrap_or_default();
     let preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
@@ -786,6 +1040,164 @@ fn generate_original_transformed_preview(
     Ok(Response::new(buf.into_inner()))
 }
 
+#[tauri::command]
+async fn preview_geometry_transform(
+    params: GeometryParams,
+    js_adjustments: serde_json::Value,
+    show_lines: bool, // New parameter to control line generation
+    state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let loaded_image_path = state.original_image.lock().unwrap()
+        .as_ref().ok_or("No image loaded")?.path.clone();
+    let visual_hash = calculate_visual_hash(&loaded_image_path, &js_adjustments);
+
+    let base_image_to_warp = {
+        let maybe_cached_image = state.geometry_cache.lock().unwrap().get(&visual_hash).cloned();
+
+        if let Some(cached_image) = maybe_cached_image {
+            cached_image
+        } else {
+            let context = get_or_init_gpu_context(&state)?;
+            
+            let (original_image, is_raw) = {
+                let guard = state.original_image.lock().unwrap();
+                let loaded = guard.as_ref().ok_or("No image loaded")?;
+                (loaded.image.clone(), loaded.is_raw)
+            };
+
+            let settings = load_settings(app_handle.clone()).unwrap_or_default();
+            let interactive_divisor = 1.5; 
+            let final_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
+            let target_dim = (final_preview_dim as f32 / interactive_divisor) as u32;
+
+            let preview_base = tokio::task::spawn_blocking(move || -> DynamicImage {
+                downscale_f32_image(&original_image, target_dim, target_dim)
+            }).await.map_err(|e| e.to_string())?;
+
+            let mut temp_adjustments = js_adjustments.clone();
+            hydrate_adjustments(&state, &mut temp_adjustments);
+
+            if let Some(obj) = temp_adjustments.as_object_mut() {
+                obj.insert("crop".to_string(), serde_json::Value::Null);
+                obj.insert("rotation".to_string(), serde_json::json!(0.0));
+                obj.insert("orientationSteps".to_string(), serde_json::json!(0));
+                obj.insert("flipHorizontal".to_string(), serde_json::json!(false));
+                obj.insert("flipVertical".to_string(), serde_json::json!(false));
+                obj.insert("transformDistortion".to_string(), serde_json::json!(0.0));
+                obj.insert("transformVertical".to_string(), serde_json::json!(0.0));
+                obj.insert("transformHorizontal".to_string(), serde_json::json!(0.0));
+                obj.insert("transformRotate".to_string(), serde_json::json!(0.0));
+                obj.insert("transformAspect".to_string(), serde_json::json!(0.0));
+                obj.insert("transformScale".to_string(), serde_json::json!(100.0));
+                obj.insert("transformXOffset".to_string(), serde_json::json!(0.0));
+                obj.insert("transformYOffset".to_string(), serde_json::json!(0.0));
+            }
+
+            let all_adjustments = get_all_adjustments_from_json(&temp_adjustments, is_raw);
+            let lut_path = temp_adjustments["lutPath"].as_str();
+            let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
+            let mask_bitmaps = Vec::new();
+
+            let processed_base = process_and_get_dynamic_image(
+                &context,
+                &state,
+                &preview_base,
+                visual_hash,
+                all_adjustments,
+                &mask_bitmaps,
+                lut,
+                "preview_geometry_transform_base_gen",
+            )?;
+
+            let mut cache = state.geometry_cache.lock().unwrap();
+            if cache.len() > 5 {
+                cache.clear();
+            }
+            cache.insert(visual_hash, processed_base.clone());
+
+            processed_base
+        }
+    };
+
+    let final_image = tokio::task::spawn_blocking(move || -> DynamicImage {
+        let warped_image = warp_image_geometry(&base_image_to_warp, params);
+        let orientation_steps = js_adjustments["orientationSteps"].as_u64().unwrap_or(0) as u8;
+        let flip_horizontal = js_adjustments["flipHorizontal"].as_bool().unwrap_or(false);
+        let flip_vertical = js_adjustments["flipVertical"].as_bool().unwrap_or(false);
+
+        let coarse_rotated_image = apply_coarse_rotation(warped_image, orientation_steps);
+        let flipped_image = apply_flip(coarse_rotated_image, flip_horizontal, flip_vertical);
+
+        if show_lines {
+            let gray_image = flipped_image.to_luma8();
+            let mut visualization = flipped_image.to_rgba8();
+            let edges = canny(&gray_image, 50.0, 100.0);
+            
+            let min_dim = gray_image.width().min(gray_image.height());
+            
+            let options = LineDetectionOptions {
+                vote_threshold: (min_dim as f32 * 0.24) as u32, 
+                suppression_radius: 15,
+            };
+            
+            let lines = detect_lines(&edges, options);
+
+            for line in lines {
+                let angle_deg = line.angle_in_degrees as f32;
+                let angle_norm = angle_deg % 180.0;
+                let alignment_threshold = 0.5;
+                let is_vertical = angle_norm < alignment_threshold || angle_norm > (180.0 - alignment_threshold);
+                let is_horizontal = (angle_norm - 90.0).abs() < alignment_threshold;
+                
+                let color = if is_vertical || is_horizontal {
+                    Rgba([0, 255, 0, 255]) 
+                } else {
+                    Rgba([255, 0, 0, 255])
+                };
+
+                let r = line.r;
+                let theta_rad = angle_deg.to_radians();
+                let a = theta_rad.cos();
+                let b = theta_rad.sin();
+                let x0 = a * r;
+                let y0 = b * r;
+                
+                let dist = (visualization.width().max(visualization.height()) * 2) as f32;
+                
+                let x1 = x0 + dist * (-b);
+                let y1 = y0 + dist * (a);
+                let x2 = x0 - dist * (-b);
+                let y2 = y0 - dist * (a);
+
+                draw_line_segment_mut(
+                    &mut visualization,
+                    (x1, y1),
+                    (x2, y2),
+                    color,
+                );
+                draw_line_segment_mut(
+                    &mut visualization,
+                    (x1 + a, y1 + b),
+                    (x2 + a, y2 + b),
+                    color,
+                );
+            }
+
+            DynamicImage::ImageRgba8(visualization)
+        } else {
+            flipped_image
+        }
+    }).await.map_err(|e| e.to_string())?;
+
+    let mut buf = Cursor::new(Vec::new());
+    
+    final_image.to_rgb8().write_with_encoder(JpegEncoder::new_with_quality(&mut buf, 75)).map_err(|e| e.to_string())?;
+    
+    let base64_str = general_purpose::STANDARD.encode(buf.get_ref());
+    Ok(format!("data:image/jpeg;base64,{}", base64_str))
+}
+
 fn get_full_image_for_processing(
     state: &tauri::State<AppState>,
 ) -> Result<(DynamicImage, bool), String> {
@@ -802,6 +1214,10 @@ fn generate_fullscreen_preview(
     state: tauri::State<AppState>,
 ) -> Result<Response, String> {
     let context = get_or_init_gpu_context(&state)?;
+
+    let mut adjustments_clone = js_adjustments.clone();
+    hydrate_adjustments(&state, &mut adjustments_clone);
+
     let (original_image, is_raw) = get_full_image_for_processing(&state)?;
     let path = state
         .original_image
@@ -811,15 +1227,15 @@ fn generate_fullscreen_preview(
         .ok_or("Original image path not found")?
         .path
         .clone();
-    let unique_hash = calculate_full_job_hash(&path, &js_adjustments);
-    let base_image = composite_patches_on_image(&original_image, &js_adjustments)
+    let unique_hash = calculate_full_job_hash(&path, &adjustments_clone);
+    let base_image = composite_patches_on_image(&original_image, &adjustments_clone)
         .map_err(|e| format!("Failed to composite AI patches for fullscreen: {}", e))?;
 
     let (transformed_image, unscaled_crop_offset) =
-        apply_all_transformations(&base_image, &js_adjustments);
+        apply_all_transformations(&base_image, &adjustments_clone);
     let (img_w, img_h) = transformed_image.dimensions();
 
-    let mask_definitions: Vec<MaskDefinition> = js_adjustments
+    let mask_definitions: Vec<MaskDefinition> = adjustments_clone
         .get("masks")
         .and_then(|m| serde_json::from_value(m.clone()).ok())
         .unwrap_or_else(Vec::new);
@@ -829,8 +1245,8 @@ fn generate_fullscreen_preview(
         .filter_map(|def| generate_mask_bitmap(def, img_w, img_h, 1.0, unscaled_crop_offset))
         .collect();
 
-    let all_adjustments = get_all_adjustments_from_json(&js_adjustments, is_raw);
-    let lut_path = js_adjustments["lutPath"].as_str();
+    let all_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
+    let lut_path = adjustments_clone["lutPath"].as_str();
     let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
 
     let final_image = process_and_get_dynamic_image(
@@ -1042,7 +1458,7 @@ async fn export_image(
             let mut image_bytes =
                 encode_image_to_bytes(&final_image, &extension, export_settings.jpeg_quality)?;
 
-            write_image_with_metadata(
+            exif_processing::write_image_with_metadata(
                 &mut image_bytes,
                 &source_path_str,
                 &extension,
@@ -1192,30 +1608,7 @@ async fn batch_export_images(
                         )?;
 
                         let original_path = std::path::Path::new(&source_path_str);
-
-                        let file_date: DateTime<Utc> = {
-                            let mut date = None;
-                            if let Ok(file) = std::fs::File::open(original_path) {
-                                let mut bufreader = std::io::BufReader::new(&file);
-                                let exifreader = exif::Reader::new();
-                                if let Ok(exif_obj) = exifreader.read_from_container(&mut bufreader) {
-                                    if let Some(field) = exif_obj.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
-                                        let s = field.display_value().to_string().replace("\"", "");
-                                        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y:%m:%d %H:%M:%S") {
-                                            date = Some(DateTime::from_naive_utc_and_offset(dt, Utc));
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            date.unwrap_or_else(|| {
-                                fs::metadata(original_path)
-                                    .ok()
-                                    .and_then(|m| m.created().ok())
-                                    .map(DateTime::<Utc>::from)
-                                    .unwrap_or_else(Utc::now)
-                            })
-                        };
+                        let file_date = exif_processing::get_creation_date_from_path(original_path);
 
                         let filename_template = export_settings
                             .filename_template
@@ -1237,7 +1630,7 @@ async fn batch_export_images(
                             export_settings.jpeg_quality,
                         )?;
 
-                        write_image_with_metadata(
+                        exif_processing::write_image_with_metadata(
                             &mut image_bytes,
                             &source_path_str,
                             &output_format,
@@ -1320,7 +1713,10 @@ async fn estimate_export_size(
         .ok_or("No original image loaded")?;
     let is_raw = loaded_image.is_raw;
 
-    let new_transform_hash = calculate_transform_hash(&js_adjustments);
+    let mut adjustments_clone = js_adjustments.clone();
+    hydrate_adjustments(&state, &mut adjustments_clone);
+
+    let new_transform_hash = calculate_transform_hash(&adjustments_clone);
     let cached_preview_lock = state.cached_preview.lock().unwrap();
 
     let (preview_image, scale, unscaled_crop_offset) = if let Some(cached) = &*cached_preview_lock {
@@ -1333,18 +1729,18 @@ async fn estimate_export_size(
         } else {
             drop(cached_preview_lock);
             let (base, scale, offset) =
-                generate_transformed_preview(&loaded_image, &js_adjustments, &app_handle)?;
+                generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?;
             (base, scale, offset)
         }
     } else {
         drop(cached_preview_lock);
         let (base, scale, offset) =
-            generate_transformed_preview(&loaded_image, &js_adjustments, &app_handle)?;
+            generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?;
         (base, scale, offset)
     };
 
     let (img_w, img_h) = preview_image.dimensions();
-    let mask_definitions: Vec<MaskDefinition> = js_adjustments
+    let mask_definitions: Vec<MaskDefinition> = adjustments_clone
         .get("masks")
         .and_then(|m| serde_json::from_value(m.clone()).ok())
         .unwrap_or_else(Vec::new);
@@ -1359,10 +1755,10 @@ async fn estimate_export_size(
         .filter_map(|def| generate_mask_bitmap(def, img_w, img_h, scale, scaled_crop_offset))
         .collect();
 
-    let all_adjustments = get_all_adjustments_from_json(&js_adjustments, is_raw);
-    let lut_path = js_adjustments["lutPath"].as_str();
+    let all_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
+    let lut_path = adjustments_clone["lutPath"].as_str();
     let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
-    let unique_hash = calculate_full_job_hash(&loaded_image.path, &js_adjustments).wrapping_add(1);
+    let unique_hash = calculate_full_job_hash(&loaded_image.path, &adjustments_clone).wrapping_add(1);
 
     let processed_preview = process_and_get_dynamic_image(
         &context,
@@ -1383,7 +1779,7 @@ async fn estimate_export_size(
     let preview_byte_size = preview_bytes.len();
 
     let (transformed_full_res, _unscaled_crop_offset) =
-        apply_all_transformations(&loaded_image.image, &js_adjustments);
+        apply_all_transformations(&loaded_image.image, &adjustments_clone);
     let (mut final_full_w, mut final_full_h) = transformed_full_res.dimensions();
 
     if let Some(resize_opts) = &export_settings.resize {
@@ -1620,210 +2016,6 @@ async fn estimate_batch_export_size(
     Ok(single_image_extrapolated_size * paths.len())
 }
 
-fn write_image_with_metadata(
-    image_bytes: &mut Vec<u8>,
-    original_path_str: &str,
-    output_format: &str,
-    keep_metadata: bool,
-    strip_gps: bool,
-) -> Result<(), String> {
-    if !keep_metadata || output_format.to_lowercase() == "tiff" {
-        // FIXME: temporary solution until I find a way to write metadata to TIFF
-        return Ok(());
-    }
-
-    let original_path = std::path::Path::new(original_path_str);
-    if !original_path.exists() {
-        return Ok(());
-    }
-
-    // Skip TIFF sources to avoid potential tag corruption issues
-    let original_ext = original_path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-    if original_ext == "tiff" || original_ext == "tif" {
-        return Ok(());
-    }
-
-    let file_type = match output_format.to_lowercase().as_str() {
-        "jpg" | "jpeg" => FileExtension::JPEG,
-        "png" => FileExtension::PNG {
-            as_zTXt_chunk: true,
-        },
-        "tiff" => FileExtension::TIFF,
-        _ => return Ok(()),
-    };
-
-    let mut metadata = Metadata::new();
-
-    if let Ok(file) = std::fs::File::open(original_path) {
-        let mut bufreader = std::io::BufReader::new(&file);
-        let exifreader = exif::Reader::new();
-
-        if let Ok(exif_obj) = exifreader.read_from_container(&mut bufreader) {
-            
-            use little_exif::rational::{uR64, iR64};
-
-            let to_ur64 = |val: &exif::Rational| -> uR64 {
-                uR64 { nominator: val.num, denominator: val.denom }
-            };
-
-            let to_ir64 = |val: &exif::SRational| -> iR64 {
-                iR64 { nominator: val.num, denominator: val.denom }
-            };
-
-            let get_string_val = |field: &exif::Field| -> String {
-                match &field.value {
-                    exif::Value::Ascii(vec) => {
-                        vec.iter()
-                            .map(|v| String::from_utf8_lossy(v).trim_matches(char::from(0)).to_string())
-                            .collect::<Vec<String>>()
-                            .join(" ")
-                    },
-                    _ => field.display_value().to_string().replace("\"", "").trim().to_string()
-                }
-            };
-
-            if let Some(f) = exif_obj.get_field(exif::Tag::Make, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::Make(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::Model, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::Model(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::LensMake, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::LensMake(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::LensModel, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::LensModel(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::Artist, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::Artist(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::Copyright, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::Copyright(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::DateTimeOriginal(get_string_val(f)));
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::DateTime, exif::In::PRIMARY) {
-                metadata.set_tag(ExifTag::CreateDate(get_string_val(f))); 
-            }
-
-            if let Some(f) = exif_obj.get_field(exif::Tag::FNumber, exif::In::PRIMARY) {
-                if let exif::Value::Rational(v) = &f.value {
-                    if !v.is_empty() { metadata.set_tag(ExifTag::FNumber(vec![to_ur64(&v[0])])); }
-                }
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::ExposureTime, exif::In::PRIMARY) {
-                if let exif::Value::Rational(v) = &f.value {
-                    if !v.is_empty() { metadata.set_tag(ExifTag::ExposureTime(vec![to_ur64(&v[0])])); }
-                }
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::FocalLength, exif::In::PRIMARY) {
-                if let exif::Value::Rational(v) = &f.value {
-                    if !v.is_empty() { metadata.set_tag(ExifTag::FocalLength(vec![to_ur64(&v[0])])); }
-                }
-            }
-
-            if let Some(f) = exif_obj.get_field(exif::Tag::ExposureBiasValue, exif::In::PRIMARY) {
-                match &f.value {
-                    exif::Value::SRational(v) if !v.is_empty() => {
-                            metadata.set_tag(ExifTag::ExposureCompensation(vec![to_ir64(&v[0])]));
-                    },
-                    exif::Value::Rational(v) if !v.is_empty() => {
-                            metadata.set_tag(ExifTag::ExposureCompensation(vec![iR64 { nominator: v[0].num as i32, denominator: v[0].denom as i32 }]));
-                    },
-                    _ => {}
-                }
-            }
-
-            if let Some(f) = exif_obj.get_field(exif::Tag::PhotographicSensitivity, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::ISO(vec![val as u16]));
-                }
-            } else if let Some(f) = exif_obj.get_field(exif::Tag::ISOSpeed, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::ISO(vec![val as u16]));
-                }
-            }
-
-            if let Some(f) = exif_obj.get_field(exif::Tag::Flash, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::Flash(vec![val as u16]));
-                }
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::MeteringMode, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::MeteringMode(vec![val as u16]));
-                }
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::WhiteBalance, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::WhiteBalance(vec![val as u16]));
-                }
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::ExposureProgram, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::ExposureProgram(vec![val as u16]));
-                }
-            }
-            if let Some(f) = exif_obj.get_field(exif::Tag::FocalLengthIn35mmFilm, exif::In::PRIMARY) {
-                if let Some(val) = f.value.get_uint(0) {
-                    metadata.set_tag(ExifTag::FocalLengthIn35mmFormat(vec![val as u16]));
-                }
-            }
-
-            if !strip_gps {
-                if let Some(f) = exif_obj.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY) {
-                        if let exif::Value::Rational(v) = &f.value {
-                            if v.len() >= 3 {
-                                metadata.set_tag(ExifTag::GPSLatitude(vec![to_ur64(&v[0]), to_ur64(&v[1]), to_ur64(&v[2])]));
-                            }
-                        }
-                }
-                if let Some(f) = exif_obj.get_field(exif::Tag::GPSLatitudeRef, exif::In::PRIMARY) {
-                    metadata.set_tag(ExifTag::GPSLatitudeRef(get_string_val(f)));
-                }
-                if let Some(f) = exif_obj.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY) {
-                        if let exif::Value::Rational(v) = &f.value {
-                            if v.len() >= 3 {
-                                metadata.set_tag(ExifTag::GPSLongitude(vec![to_ur64(&v[0]), to_ur64(&v[1]), to_ur64(&v[2])]));
-                            }
-                        }
-                }
-                if let Some(f) = exif_obj.get_field(exif::Tag::GPSLongitudeRef, exif::In::PRIMARY) {
-                    metadata.set_tag(ExifTag::GPSLongitudeRef(get_string_val(f)));
-                }
-                if let Some(f) = exif_obj.get_field(exif::Tag::GPSAltitude, exif::In::PRIMARY) {
-                    if let exif::Value::Rational(v) = &f.value {
-                        if !v.is_empty() { metadata.set_tag(ExifTag::GPSAltitude(vec![to_ur64(&v[0])])); }
-                    }
-                }
-                if let Some(f) = exif_obj.get_field(exif::Tag::GPSAltitudeRef, exif::In::PRIMARY) {
-                        if let Some(val) = f.value.get_uint(0) {
-                            metadata.set_tag(ExifTag::GPSAltitudeRef(vec![val as u8]));
-                        }
-                }
-            }
-        }
-    }
-
-    metadata.set_tag(ExifTag::Software("RapidRAW".to_string()));
-    metadata.set_tag(ExifTag::Orientation(vec![1u16]));
-    metadata.set_tag(ExifTag::ColorSpace(vec![1u16]));
-
-    // little_exif has a bug where writing a Metadata object causes a panic, even if you do everything else right - see https://github.com/TechnikTobi/little_exif/issues/76
-    let write_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        metadata.write_to_vec(image_bytes, file_type)
-    }));
-
-    match write_result {
-        Ok(Ok(_)) => {},
-        Ok(Err(e)) => log::warn!("Failed to write metadata: {}", e),
-        Err(_) => log::error!("Recovered from little_exif library panic. Saving image without metadata."),
-    }
-
-    Ok(())
-}
-
 #[tauri::command]
 fn generate_mask_overlay(
     mask_def: MaskDefinition,
@@ -1860,6 +2052,7 @@ fn generate_mask_overlay(
 
 #[tauri::command]
 async fn generate_ai_foreground_mask(
+    js_adjustments: serde_json::Value,
     rotation: f32,
     flip_horizontal: bool,
     flip_vertical: bool,
@@ -1872,8 +2065,9 @@ async fn generate_ai_foreground_mask(
         .map_err(|e| e.to_string())?;
 
     let (full_image, _) = get_full_image_for_processing(&state)?;
+    let warped_image = apply_geometry_warp(&full_image, &js_adjustments);
     let full_mask_image =
-        run_u2netp_model(&full_image, &models.u2netp).map_err(|e| e.to_string())?;
+        run_u2netp_model(&warped_image, &models.u2netp).map_err(|e| e.to_string())?;
     let base64_data = encode_to_base64_png(&full_mask_image)?;
 
     Ok(AiForegroundMaskParameters {
@@ -1887,6 +2081,7 @@ async fn generate_ai_foreground_mask(
 
 #[tauri::command]
 async fn generate_ai_sky_mask(
+    js_adjustments: serde_json::Value,
     rotation: f32,
     flip_horizontal: bool,
     flip_vertical: bool,
@@ -1899,8 +2094,9 @@ async fn generate_ai_sky_mask(
         .map_err(|e| e.to_string())?;
 
     let (full_image, _) = get_full_image_for_processing(&state)?;
+    let warped_image = apply_geometry_warp(&full_image, &js_adjustments);
     let full_mask_image =
-        run_sky_seg_model(&full_image, &models.sky_seg).map_err(|e| e.to_string())?;
+        run_sky_seg_model(&warped_image, &models.sky_seg).map_err(|e| e.to_string())?;
     let base64_data = encode_to_base64_png(&full_mask_image)?;
 
     Ok(AiSkyMaskParameters {
@@ -1914,6 +2110,7 @@ async fn generate_ai_sky_mask(
 
 #[tauri::command]
 async fn generate_ai_subject_mask(
+    js_adjustments: serde_json::Value,
     path: String,
     start_point: (f64, f64),
     end_point: (f64, f64),
@@ -1928,29 +2125,42 @@ async fn generate_ai_subject_mask(
         .await
         .map_err(|e| e.to_string())?;
 
+    let (full_image, _) = get_full_image_for_processing(&state)?;
+    let warped_image = apply_geometry_warp(&full_image, &js_adjustments);
+
     let embeddings = {
         let mut ai_state_lock = state.ai_state.lock().unwrap();
         let ai_state = ai_state_lock.as_mut().unwrap();
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(path.as_bytes());
+        let mut geo_hasher = DefaultHasher::new();
+        js_adjustments["transformDistortion"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformVertical"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformHorizontal"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformRotate"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformAspect"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformScale"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformXOffset"].to_string().hash(&mut geo_hasher);
+        js_adjustments["transformYOffset"].to_string().hash(&mut geo_hasher);
+        hasher.update(&geo_hasher.finish().to_le_bytes());
+
+
         let path_hash = hasher.finalize().to_hex().to_string();
 
         if let Some(cached_embeddings) = &ai_state.embeddings {
             if cached_embeddings.path_hash == path_hash {
                 cached_embeddings.clone()
             } else {
-                let (full_image, _) = get_full_image_for_processing(&state)?;
                 let mut new_embeddings =
-                    generate_image_embeddings(&full_image, &models.sam_encoder)
+                    generate_image_embeddings(&warped_image, &models.sam_encoder)
                         .map_err(|e| e.to_string())?;
                 new_embeddings.path_hash = path_hash;
                 ai_state.embeddings = Some(new_embeddings.clone());
                 new_embeddings
             }
         } else {
-            let (full_image, _) = get_full_image_for_processing(&state)?;
-            let mut new_embeddings = generate_image_embeddings(&full_image, &models.sam_encoder)
+            let mut new_embeddings = generate_image_embeddings(&warped_image, &models.sam_encoder)
                 .map_err(|e| e.to_string())?;
             new_embeddings.path_hash = path_hash;
             ai_state.embeddings = Some(new_embeddings.clone());
@@ -2117,24 +2327,26 @@ fn update_window_effect(theme: String, window: tauri::Window) {
 }
 
 #[tauri::command]
-async fn check_comfyui_status(app_handle: tauri::AppHandle) {
+async fn check_ai_connector_status(app_handle: tauri::AppHandle) {
     let settings = load_settings(app_handle.clone()).unwrap_or_default();
-    let is_connected = if let Some(address) = settings.comfyui_address {
-        comfyui_connector::ping_server(&address).await.is_ok()
+    let is_connected = if let Some(address) = settings.ai_connector_address {
+        ai_connector::check_status(&address).await.unwrap_or(false)
     } else {
         false
     };
     let _ = app_handle.emit(
-        "comfyui-status-update",
+        "ai-connector-status-update",
         serde_json::json!({ "connected": is_connected }),
     );
 }
 
 #[tauri::command]
-async fn test_comfyui_connection(address: String) -> Result<(), String> {
-    comfyui_connector::ping_server(&address)
-        .await
-        .map_err(|e| e.to_string())
+async fn test_ai_connector_connection(address: String) -> Result<(), String> {
+    match ai_connector::check_status(&address).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("Server reachable but returned bad health status".to_string()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn calculate_dynamic_patch_radius(width: u32, height: u32) -> u32 {
@@ -2149,7 +2361,7 @@ fn calculate_dynamic_patch_radius(width: u32, height: u32) -> u32 {
 
 #[tauri::command]
 async fn invoke_generative_replace_with_mask_def(
-    _path: String,
+    path: String,
     patch_definition: AiPatchDefinition,
     current_adjustments: Value,
     use_fast_inpaint: bool,
@@ -2185,34 +2397,33 @@ async fn invoke_generative_replace_with_mask_def(
     let mask_bitmap = generate_mask_bitmap(&mask_def_for_generation, img_w, img_h, 1.0, (0.0, 0.0))
         .ok_or("Failed to generate mask bitmap for AI replace")?;
 
+    let mask_dynamic = DynamicImage::ImageLuma8(mask_bitmap);
+    let unwarped_dynamic = apply_unwarp_geometry(&mask_dynamic, &current_adjustments);
+    let mask_bitmap = unwarped_dynamic.to_luma8();
+
     let patch_rgba = if use_fast_inpaint {
         // cpu based inpainting, low quality but no setup required
         let patch_radius = calculate_dynamic_patch_radius(img_w, img_h);
         inpainting::perform_fast_inpaint(&source_image, &mask_bitmap, patch_radius)?
-    } else if let Some(address) = settings.comfyui_address {
+    } else if let Some(address) = settings.ai_connector_address {
         // self hosted generative ai service
-        let comfy_config = settings.comfyui_workflow_config;
-
         let mut rgba_mask = RgbaImage::new(img_w, img_h);
         for (x, y, luma_pixel) in mask_bitmap.enumerate_pixels() {
             let intensity = luma_pixel[0];
-            rgba_mask.put_pixel(x, y, Rgba([0, 0, 0, intensity]));
+            rgba_mask.put_pixel(x, y, Rgba([intensity, intensity, intensity, 255]));
         }
-        let mask_image = DynamicImage::ImageRgba8(rgba_mask);
+        let mask_image_dynamic = DynamicImage::ImageRgba8(rgba_mask);
 
-        let result_png_bytes = comfyui_connector::execute_workflow(
+        let (real_path_buf, _) = crate::file_management::parse_virtual_path(&path);
+        let real_path_str = real_path_buf.to_string_lossy().to_string();
+
+        ai_connector::process_inpainting(
             &address,
-            &comfy_config,
-            source_image,
-            Some(mask_image),
-            Some(patch_definition.prompt),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-        image::load_from_memory(&result_png_bytes)
-            .map_err(|e| e.to_string())?
-            .to_rgba8()
+            &real_path_str,
+            &source_image,
+            &mask_image_dynamic,
+            patch_definition.prompt
+        ).await.map_err(|e| e.to_string())?
     } else if let Some(auth_token) = token {
         // convenience cloud service
         let client = reqwest::Client::new();
@@ -2262,7 +2473,7 @@ async fn invoke_generative_replace_with_mask_def(
         }
     } else {
         return Err(
-            "No generative backend available. Connect to ComfyUI or upgrade to Pro for Cloud AI."
+            "No generative backend available. Connect to a RapidRAW AI Connector or upgrade to Pro for Cloud AI."
                 .to_string(),
         );
     };
@@ -3016,6 +3227,8 @@ fn main() {
                     log::info!("Applied Linux GPU optimizations.");
                 }
             }
+            
+            start_preview_worker(app_handle.clone());
 
             let window_cfg = app.config().app.windows.get(0).unwrap().clone();
             let transparent = settings.transparent.unwrap_or(window_cfg.transparent);
@@ -3040,6 +3253,7 @@ fn main() {
             cached_preview: Mutex::new(None),
             gpu_context: Mutex::new(None),
             gpu_image_cache: Mutex::new(None),
+            gpu_processor: Mutex::new(None),
             ai_state: Mutex::new(None),
             ai_init_lock: TokioMutex::new(()),
             export_task_handle: Mutex::new(None),
@@ -3049,6 +3263,11 @@ fn main() {
             lut_cache: Mutex::new(HashMap::new()),
             initial_file_path: Mutex::new(None),
             thumbnail_cancellation_token: Arc::new(AtomicBool::new(false)),
+            preview_worker_tx: Mutex::new(None),
+            mask_cache: Mutex::new(HashMap::new()),
+            patch_cache: Mutex::new(HashMap::new()),
+            geometry_cache: Mutex::new(HashMap::new()),
+            thumbnail_geometry_cache: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             load_image,
@@ -3063,13 +3282,14 @@ fn main() {
             generate_original_transformed_preview,
             generate_preset_preview,
             generate_uncropped_preview,
+            preview_geometry_transform,
             generate_mask_overlay,
             generate_ai_subject_mask,
             generate_ai_foreground_mask,
             generate_ai_sky_mask,
             update_window_effect,
-            check_comfyui_status,
-            test_comfyui_connection,
+            check_ai_connector_status,
+            test_ai_connector_connection,
             invoke_generative_replace_with_mask_def,
             get_supported_file_types,
             get_log_file_path,

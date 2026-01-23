@@ -84,6 +84,17 @@ export enum Effect {
   VignetteRoundness = 'vignetteRoundness',
 }
 
+export enum TransformAdjustment {
+  TransformDistortion = 'transformDistortion',
+  TransformVertical = 'transformVertical',
+  TransformHorizontal = 'transformHorizontal',
+  TransformRotate = 'transformRotate',
+  TransformAspect = 'transformAspect',
+  TransformScale = 'transformScale',
+  TransformXOffset = 'transformXOffset',
+  TransformYOffset = 'transformYOffset',
+}
+
 export interface ColorCalibration {
   shadowsTint: number;
   redHue: number;
@@ -143,6 +154,14 @@ export interface Adjustments {
   temperature: number;
   tint: number;
   toneMapper: 'agx' | 'basic';
+  transformDistortion: number;
+  transformVertical: number;
+  transformHorizontal: number;
+  transformRotate: number;
+  transformAspect: number;
+  transformScale: number;
+  transformXOffset: number;
+  transformYOffset: number;
   vibrance: number;
   vignetteAmount: number;
   vignetteFeather: number;
@@ -154,6 +173,7 @@ export interface Adjustments {
 export interface AiPatch {
   id: string;
   isLoading: boolean;
+  invert: boolean;
   name: string;
   patchData: any | null;
   prompt: string;
@@ -431,6 +451,14 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
   temperature: 0,
   tint: 0,
   toneMapper: 'basic',
+  transformDistortion: 0,
+  transformVertical: 0,
+  transformHorizontal: 0,
+  transformRotate: 0,
+  transformAspect: 0,
+  transformScale: 100,
+  transformXOffset: 0,
+  transformYOffset: 0,
   vibrance: 0,
   vignetteAmount: 0,
   vignetteFeather: 50,
@@ -444,13 +472,19 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
     return INITIAL_ADJUSTMENTS;
   }
 
-  const normalizedMasks = (loadedAdjustments.masks || []).map((maskContainer: MaskContainer) => {
-    const containerAdjustments = maskContainer.adjustments || {};
-    const normalizedSubMasks = (maskContainer.subMasks || []).map((subMask: Partial<SubMask>) => ({
+  const normalizeSubMasks = (subMasks: any[]) => {
+    return (subMasks || []).map((subMask: Partial<SubMask>) => ({
       visible: true,
       mode: SubMaskMode.Additive,
+      invert: false,
+      opacity: 100,
       ...subMask,
     }));
+  };
+
+  const normalizedMasks = (loadedAdjustments.masks || []).map((maskContainer: MaskContainer) => {
+    const containerAdjustments = maskContainer.adjustments || {};
+    const normalizedSubMasks = normalizeSubMasks(maskContainer.subMasks);
 
     return {
       ...INITIAL_MASK_CONTAINER,
@@ -474,11 +508,20 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
   const normalizedAiPatches = (loadedAdjustments.aiPatches || []).map((patch: any) => ({
     visible: true,
     ...patch,
+    subMasks: normalizeSubMasks(patch.subMasks),
   }));
 
   return {
     ...INITIAL_ADJUSTMENTS,
     ...loadedAdjustments,
+    transformDistortion: loadedAdjustments.transformDistortion ?? INITIAL_ADJUSTMENTS.transformDistortion,
+    transformVertical: loadedAdjustments.transformVertical ?? INITIAL_ADJUSTMENTS.transformVertical,
+    transformHorizontal: loadedAdjustments.transformHorizontal ?? INITIAL_ADJUSTMENTS.transformHorizontal,
+    transformRotate: loadedAdjustments.transformRotate ?? INITIAL_ADJUSTMENTS.transformRotate,
+    transformAspect: loadedAdjustments.transformAspect ?? INITIAL_ADJUSTMENTS.transformAspect,
+    transformScale: loadedAdjustments.transformScale ?? INITIAL_ADJUSTMENTS.transformScale,
+    transformXOffset: loadedAdjustments.transformXOffset ?? INITIAL_ADJUSTMENTS.transformXOffset,
+    transformYOffset: loadedAdjustments.transformYOffset ?? INITIAL_ADJUSTMENTS.transformYOffset,
     colorCalibration: { ...INITIAL_ADJUSTMENTS.colorCalibration, ...(loadedAdjustments.colorCalibration || {}) },
     colorGrading: { ...INITIAL_ADJUSTMENTS.colorGrading, ...(loadedAdjustments.colorGrading || {}) },
     hsl: { ...INITIAL_ADJUSTMENTS.hsl, ...(loadedAdjustments.hsl || {}) },

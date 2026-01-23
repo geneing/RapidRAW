@@ -13,6 +13,8 @@ interface SliderProps {
   trackClassName?: string;
 }
 
+const DOUBLE_CLICK_THRESHOLD_MS = 300;
+
 const Slider = ({
   defaultValue = 0,
   label,
@@ -32,6 +34,7 @@ const Slider = ({
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [isLabelHovered, setIsLabelHovered] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const lastUpTime = useRef(0);
 
   useEffect(() => {
     onDragStateChange(isDragging);
@@ -155,8 +158,18 @@ const Slider = ({
     onChange(e);
   };
 
-  const handleDragStart = () => setIsDragging(true);
-  const handleDragEnd = () => setIsDragging(false);
+  const handleDragStart = (e: React.MouseEvent<HTMLInputElement>) => {
+    if (Date.now() - lastUpTime.current < DOUBLE_CLICK_THRESHOLD_MS) {
+      e.preventDefault();
+      return;
+    }
+    setIsDragging(true);
+  };
+
+  const handleDragEnd = () => {
+    lastUpTime.current = Date.now();
+    setIsDragging(false);
+  };
 
   const handleValueClick = () => {
     setIsEditing(true);
@@ -270,23 +283,32 @@ const Slider = ({
           )}
         </div>
       </div>
-      <input
-        className={`w-full h-1.5 ${
-          trackClassName || 'bg-card-active'
-        } rounded-full appearance-none cursor-pointer slider-input ${isDragging ? 'slider-thumb-active' : ''}`}
-        max={String(max)}
-        min={String(min)}
-        onChange={handleChange}
-        onDoubleClick={handleReset}
-        onKeyDown={handleRangeKeyDown}
-        onMouseDown={handleDragStart}
-        onMouseUp={handleDragEnd}
-        onTouchEnd={handleDragEnd}
-        onTouchStart={handleDragStart}
-        step={String(step)}
-        type="range"
-        value={displayValue}
-      />
+
+      <div className="relative w-full h-5">
+        <div
+          className={`absolute top-1/2 left-0 w-full h-1.5 -translate-y-1/4 rounded-full pointer-events-none ${
+            trackClassName || 'bg-card-active'
+          }`}
+        />
+        <input
+          className={`absolute top-1/2 left-0 w-full h-1.5 appearance-none bg-transparent cursor-pointer m-0 p-0 slider-input z-10 ${
+            isDragging ? 'slider-thumb-active' : ''
+          }`}
+          style={{ margin: 0 }}
+          max={String(max)}
+          min={String(min)}
+          onChange={handleChange}
+          onDoubleClick={handleReset}
+          onKeyDown={handleRangeKeyDown}
+          onMouseDown={handleDragStart}
+          onMouseUp={handleDragEnd}
+          onTouchEnd={handleDragEnd}
+          onTouchStart={handleDragStart}
+          step={String(step)}
+          type="range"
+          value={displayValue}
+        />
+      </div>
     </div>
   );
 };

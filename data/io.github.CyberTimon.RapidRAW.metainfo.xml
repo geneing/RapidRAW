@@ -22,14 +22,14 @@
       RapidRAW is a modern, high-performance alternative to Adobe Lightroom®. It delivers a simple, beautiful editing experience in a lightweight package (under 20MB) for Windows, macOS, and Linux.
     </p>
     <p>
-      I developed this project as a personal challenge at the age of 18. My goal was to create a high-performance tool for my own photography workflow while deepening my understanding of both React and Rust, with the support from Google Gemini.
+      I started developing this project as a personal challenge when I was 18. My goal was to create a high-performance tool for my own photography workflow while deepening my understanding of React, WGSL and Rust, with the support from Google Gemini.
     </p>
   </description>
 
   <launchable type="desktop-id">io.github.CyberTimon.RapidRAW.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/CyberTimon/RapidRAW/refs/tags/v1.4.2/.github/assets/editor.png</image>
+      <image>https://raw.githubusercontent.com/CyberTimon/RapidRAW/6f56816ff765e678586c977752aae2cc999a1b92/.github/assets/editor.png</image>
         <caption>Editor interface</caption>
     </screenshot>
   </screenshots>
@@ -38,6 +38,27 @@
   <url type="homepage">https://github.com/CyberTimon/RapidRAW</url>
 
   <releases>
+    <release version="v1.4.8" date="2026-01-11">
+        <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.8</url>
+        <description translate="no">
+            <p>New Features</p>
+            <ul>
+                <li>Live Previews: See changes in near real-time as you drag sliders, thanks to a large rewrite of the GPU processing engine. The old behavior can be restored in settings for less powerful machines.</li>
+                <li>Updated Collage Maker: Completely overhauled with drag &amp; drop placement, an option to keep aspect ratios, and zoom &amp; pan controls within each cell.</li>
+                <li>LUT Quality Improvement: Implemented tetrahedral interpolation to eliminate banding and posterization artifacts, ensuring smooth color transitions even with low-resolution LUTs.</li>
+            </ul>
+            <p>Core Improvements</p>
+            <ul>
+                <li>Added a separate preview worker and optional high-quality live previews.</li>
+                <li>Enhanced EXIF UI with more info when hovering over the image name.</li>
+                <li>Added a 'Prefer RAW' filter option to the library.</li>
+                <li>Added support for uppercase file extensions.</li>
+                <li>The thumbnail cache is now flushed when switching folders.</li>
+                <li>AI masking stability improvements under load.</li>
+                <li>Updated the Rawler library.</li>
+            </ul>
+        </description>
+    </release>
     <release version="v1.4.7" date="2025-12-23">
         <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.7</url>
         <description translate="no">

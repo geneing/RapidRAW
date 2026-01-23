@@ -117,6 +117,8 @@ export default function BottomBar({
   const [isEditingPercent, setIsEditingPercent] = useState(false);
   const [percentInputValue, setPercentInputValue] = useState('');
   const isDraggingSlider = useRef(false);
+  const [isZoomActive, setIsZoomActive] = useState(false);
+
   const percentInputRef = useRef<HTMLInputElement>(null);
   const [isZoomLabelHovered, setIsZoomLabelHovered] = useState(false);
 
@@ -136,6 +138,28 @@ export default function BottomBar({
     }
   }, [currentOriginalPercent, isZoomReady]);
 
+  useEffect(() => {
+    const handleDragEndGlobal = () => {
+      if (isZoomActive) {
+        setIsZoomActive(false);
+        isDraggingSlider.current = false;
+        if (isZoomReady) {
+          setLatchedDisplayPercent(Math.round(currentOriginalPercent * 100));
+        }
+      }
+    };
+
+    if (isZoomActive) {
+      window.addEventListener('mouseup', handleDragEndGlobal);
+      window.addEventListener('touchend', handleDragEndGlobal);
+    }
+
+    return () => {
+      window.removeEventListener('mouseup', handleDragEndGlobal);
+      window.removeEventListener('touchend', handleDragEndGlobal);
+    };
+  }, [isZoomActive, isZoomReady, currentOriginalPercent]);
+
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newZoom = parseFloat(e.target.value);
     setLatchedSliderValue(newZoom);
@@ -145,10 +169,12 @@ export default function BottomBar({
 
   const handleMouseDown = () => {
     isDraggingSlider.current = true;
+    setIsZoomActive(true);
   };
 
   const handleMouseUp = () => {
     isDraggingSlider.current = false;
+    setIsZoomActive(false);
     if (isZoomReady) {
       setLatchedDisplayPercent(Math.round(currentOriginalPercent * 100));
     }
@@ -205,29 +231,31 @@ export default function BottomBar({
           className={clsx(
             'overflow-hidden',
             !isResizing && 'transition-all duration-300 ease-in-out',
-            isFilmstripVisible ? 'p-2' : 'p-0',
           )}
           style={{ height: isFilmstripVisible ? `${filmstripHeight}px` : '0px' }}
         >
-          <Filmstrip
-            imageList={imageList}
-            imageRatings={imageRatings}
-            isLoading={isLoading}
-            multiSelectedPaths={multiSelectedPaths}
-            onClearSelection={onClearSelection}
-            onContextMenu={onContextMenu}
-            onImageSelect={onImageSelect}
-            selectedImage={selectedImage}
-            thumbnails={thumbnails}
-            thumbnailAspectRatio={thumbnailAspectRatio}
-          />
+          <div className="w-full p-2" style={{ height: `${filmstripHeight}px` }}>
+            <Filmstrip
+              imageList={imageList}
+              imageRatings={imageRatings}
+              isLoading={isLoading}
+              multiSelectedPaths={multiSelectedPaths}
+              onClearSelection={onClearSelection}
+              onContextMenu={onContextMenu}
+              onImageSelect={onImageSelect}
+              selectedImage={selectedImage}
+              thumbnails={thumbnails}
+              thumbnailAspectRatio={thumbnailAspectRatio}
+            />
+          </div>
         </div>
       )}
 
       <div
         className={clsx(
           'flex-shrink-0 h-10 flex items-center justify-between px-3',
-          !isLibraryView && isFilmstripVisible && 'border-t border-surface',
+          !isLibraryView && 'border-t', 
+          (!isLibraryView && isFilmstripVisible) ? 'border-surface' : 'border-transparent'
         )}
       >
         <div className="flex items-center gap-4">
@@ -302,21 +330,28 @@ export default function BottomBar({
                   {isZoomLabelHovered ? 'Reset Zoom' : 'Zoom'}
                 </span>
               </div>
-              <input
-                type="range"
-                min={0.1}
-                max={2.0}
-                step="0.05"
-                value={latchedSliderValue}
-                onChange={handleSliderChange}
-                onKeyDown={handleZoomKeyDown}
-                onMouseDown={handleMouseDown}
-                onMouseUp={handleMouseUp}
-                onTouchStart={handleMouseDown}
-                onTouchEnd={handleMouseUp}
-                onDoubleClick={handleResetZoom}
-                className="flex-1 h-1 bg-surface rounded-lg appearance-none cursor-pointer accent-accent"
-              />
+              
+              <div className="relative flex-1 h-5">
+                <div className="absolute top-1/2 left-0 w-full h-1.5 -translate-y-1/2 bg-surface rounded-full pointer-events-none" />
+                <input
+                  type="range"
+                  min={0.1}
+                  max={2.0}
+                  step="0.05"
+                  value={latchedSliderValue}
+                  onChange={handleSliderChange}
+                  onKeyDown={handleZoomKeyDown}
+                  onMouseDown={handleMouseDown}
+                  onMouseUp={handleMouseUp}
+                  onTouchStart={handleMouseDown}
+                  onTouchEnd={handleMouseUp}
+                  onDoubleClick={handleResetZoom}
+                  className={`absolute top-1/2 left-0 w-full h-1.5 -mt-[1.5px] appearance-none bg-transparent cursor-pointer p-0 slider-input z-10 ${
+                    isZoomActive ? 'slider-thumb-active' : ''
+                  }`}
+                />
+              </div>
+
               <div className="relative text-xs text-text-secondary w-6 text-right flex items-center justify-end h-5 gap-1">
                 {isEditingPercent ? (
                   <input
