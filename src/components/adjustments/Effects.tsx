@@ -1,6 +1,6 @@
 import Slider from '../ui/Slider';
 import Switch from '../ui/Switch';
-import { Adjustments, Effect } from '../../utils/adjustments';
+import { Adjustments, Effect, CreativeAdjustment } from '../../utils/adjustments';
 import LUTControl from '../ui/LUTControl';
 import { AppSettings } from '../ui/AppProperties';
 
@@ -21,7 +21,7 @@ export default function EffectsPanel({
   appSettings,
   onDragStateChange,
 }: EffectsPanelProps) {
-  const handleAdjustmentChange = (key: Effect, value: string) => {
+  const handleAdjustmentChange = (key: string, value: string) => {
     const numericValue = parseInt(value, 10);
     setAdjustments((prev: Partial<Adjustments>) => ({ ...prev, [key]: numericValue }));
   };
@@ -53,6 +53,40 @@ export default function EffectsPanel({
 
   return (
     <div>
+      <div className="mb-4 p-2 bg-bg-tertiary rounded-md">
+        <p className="text-md font-semibold mb-2 text-primary">Creative</p>
+
+        <Slider
+          label="Glow"
+          max={100}
+          min={0}
+          onChange={(e: any) => handleAdjustmentChange(CreativeAdjustment.GlowAmount, e.target.value)}
+          step={1}
+          value={adjustments.glowAmount}
+          onDragStateChange={onDragStateChange}
+        />
+
+        <Slider
+          label="Halation"
+          max={100}
+          min={0}
+          onChange={(e: any) => handleAdjustmentChange(CreativeAdjustment.HalationAmount, e.target.value)}
+          step={1}
+          value={adjustments.halationAmount}
+          onDragStateChange={onDragStateChange}
+        />
+
+        <Slider
+          label="Light Flares"
+          max={100}
+          min={0}
+          onChange={(e: any) => handleAdjustmentChange(CreativeAdjustment.FlareAmount, e.target.value)}
+          step={1}
+          value={adjustments.flareAmount}
+          onDragStateChange={onDragStateChange}
+        />
+      </div>
+
       {!isForMask && (
         <>
           <div className="my-4 p-2 bg-bg-tertiary rounded-md">

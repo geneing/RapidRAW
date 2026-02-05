@@ -83,6 +83,7 @@ import {
 } from './utils/adjustments';
 import { generatePaletteFromImage } from './utils/palette';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import GlobalTooltip from './components/ui/GlobalTooltip';
 import { THEMES, DEFAULT_THEME_ID, ThemeProps } from './utils/themes';
 import { SubMask, ToolType } from './components/panel/right/Masks';
 import {
@@ -340,6 +341,7 @@ function App() {
   const [isFullResolution, setIsFullResolution] = useState(false);
   const [fullResolutionUrl, setFullResolutionUrl] = useState<string | null>(null);
   const [isLoadingFullRes, setIsLoadingFullRes] = useState(false);
+  const [isRotationActive, setIsRotationActive] = useState(false);
   const [transformedOriginalUrl, setTransformedOriginalUrl] = useState<string | null>(null);
   const fullResRequestRef = useRef<any>(null);
   const fullResCacheKeyRef = useRef<string | null>(null);
@@ -725,7 +727,28 @@ function App() {
       }));
 
       try {
+        const transformAdjustments = {
+          transformDistortion: adjustments.transformDistortion,
+          transformVertical: adjustments.transformVertical,
+          transformHorizontal: adjustments.transformHorizontal,
+          transformRotate: adjustments.transformRotate,
+          transformAspect: adjustments.transformAspect,
+          transformScale: adjustments.transformScale,
+          transformXOffset: adjustments.transformXOffset,
+          transformYOffset: adjustments.transformYOffset,
+          lensDistortionAmount: adjustments.lensDistortionAmount,
+          lensVignetteAmount: adjustments.lensVignetteAmount,
+          lensTcaAmount: adjustments.lensTcaAmount,
+          lensDistortionParams: adjustments.lensDistortionParams,
+          lensMaker: adjustments.lensMaker,
+          lensModel: adjustments.lensModel,
+          lensDistortionEnabled: adjustments.lensDistortionEnabled,
+          lensTcaEnabled: adjustments.lensTcaEnabled,
+          lensVignetteEnabled: adjustments.lensVignetteEnabled,
+        };
+
         const newMaskParams: any = await invoke(Invokes.GenerateAiSubjectMask, {
+          jsAdjustments: transformAdjustments,
           endPoint: [endPoint.x, endPoint.y],
           flipHorizontal: adjustments.flipHorizontal,
           flipVertical: adjustments.flipVertical,
@@ -859,6 +882,15 @@ function App() {
         transformScale: adjustments.transformScale,
         transformXOffset: adjustments.transformXOffset,
         transformYOffset: adjustments.transformYOffset,
+        lensDistortionAmount: adjustments.lensDistortionAmount,
+        lensVignetteAmount: adjustments.lensVignetteAmount,
+        lensTcaAmount: adjustments.lensTcaAmount,
+        lensDistortionParams: adjustments.lensDistortionParams,
+        lensMaker: adjustments.lensMaker,
+        lensModel: adjustments.lensModel,
+        lensDistortionEnabled: adjustments.lensDistortionEnabled,
+        lensTcaEnabled: adjustments.lensTcaEnabled,
+        lensVignetteEnabled: adjustments.lensVignetteEnabled,
       };
       const newParameters = await invoke(Invokes.GenerateAiSubjectMask, {
         jsAdjustments: transformAdjustments,
@@ -902,6 +934,15 @@ function App() {
         transformScale: adjustments.transformScale,
         transformXOffset: adjustments.transformXOffset,
         transformYOffset: adjustments.transformYOffset,
+        lensDistortionAmount: adjustments.lensDistortionAmount,
+        lensVignetteAmount: adjustments.lensVignetteAmount,
+        lensTcaAmount: adjustments.lensTcaAmount,
+        lensDistortionParams: adjustments.lensDistortionParams,
+        lensMaker: adjustments.lensMaker,
+        lensModel: adjustments.lensModel,
+        lensDistortionEnabled: adjustments.lensDistortionEnabled,
+        lensTcaEnabled: adjustments.lensTcaEnabled,
+        lensVignetteEnabled: adjustments.lensVignetteEnabled,
       };
       const newParameters = await invoke(Invokes.GenerateAiForegroundMask, {
         jsAdjustments: transformAdjustments,
@@ -942,6 +983,15 @@ function App() {
         transformScale: adjustments.transformScale,
         transformXOffset: adjustments.transformXOffset,
         transformYOffset: adjustments.transformYOffset,
+        lensDistortionAmount: adjustments.lensDistortionAmount,
+        lensVignetteAmount: adjustments.lensVignetteAmount,
+        lensTcaAmount: adjustments.lensTcaAmount,
+        lensDistortionParams: adjustments.lensDistortionParams,
+        lensMaker: adjustments.lensMaker,
+        lensModel: adjustments.lensModel,
+        lensDistortionEnabled: adjustments.lensDistortionEnabled,
+        lensTcaEnabled: adjustments.lensTcaEnabled,
+        lensVignetteEnabled: adjustments.lensVignetteEnabled,
       };
       const newParameters = await invoke(Invokes.GenerateAiSkyMask, {
         jsAdjustments: transformAdjustments,
@@ -1178,6 +1228,10 @@ function App() {
         default:
           comparison = a.path.localeCompare(b.path);
           break;
+      }
+
+      if (comparison === 0 && key !== 'name') {
+        return a.path.localeCompare(b.path);
       }
 
       return order === SortDirection.Ascending ? comparison : -comparison;
@@ -3402,6 +3456,16 @@ function App() {
     event.stopPropagation();
     if (!selectedImage) return;
 
+    const handleCreateVirtualCopy = async (sourcePath: string) => {
+      try {
+        await invoke(Invokes.CreateVirtualCopy, { sourceVirtualPath: sourcePath });
+        await refreshImageList();
+      } catch (err) {
+        console.error('Failed to create virtual copy:', err);
+        setError(`Failed to create virtual copy: ${err}`);
+      }
+    };
+
     const commonTags = getCommonTags([selectedImage.path]);
 
     const options: Array<Option> = [
@@ -3424,8 +3488,57 @@ function App() {
         onClick: handlePasteAdjustments,
         disabled: copiedAdjustments === null,
       },
+      {
+        label: 'Productivity',
+        icon: Gauge,
+        submenu: [
+          {
+            label: 'Auto Adjust Image',
+            icon: Aperture,
+            onClick: handleAutoAdjustments,
+          },
+          {
+            icon: CopyPlus,
+            label: 'Create Virtual Copy',
+            onClick: () => handleCreateVirtualCopy(selectedImage.path),
+          },
+          {
+            label: 'Denoise',
+            icon: Grip,
+            onClick: () => {
+              setDenoiseModalState({
+                isOpen: true,
+                isProcessing: false,
+                previewBase64: null,
+                error: null,
+                targetPath: selectedImage.path,
+                progressMessage: null,
+              });
+            },
+          },
+          {
+            disabled: true,
+            icon: Images,
+            label: 'Stitch Panorama',
+          },
+          {
+            icon: LayoutTemplate,
+            label: 'Frame Image',
+            onClick: () => {
+              setCollageModalState({
+                isOpen: true,
+                sourceImages: [selectedImage],
+              });
+            },
+          },
+          {
+            label: 'Cull Image',
+            icon: Users,
+            disabled: true,
+          },
+        ],
+      },
       { type: OPTION_SEPARATOR },
-      { label: 'Auto Adjust Image', icon: Aperture, onClick: handleAutoAdjustments },
       {
         label: 'Rating',
         icon: Star,
@@ -3465,22 +3578,31 @@ function App() {
       {
         label: 'Reset Adjustments',
         icon: RotateCcw,
-        onClick: () => {
-          debouncedSetHistory.cancel();
-          const currentRating = adjustments.rating;
+        isDestructive: true,
+        submenu: [
+          { label: 'Cancel', icon: X, onClick: () => {} },
+          {
+            label: 'Confirm',
+            icon: Check,
+            isDestructive: true,
+            onClick: () => {
+              debouncedSetHistory.cancel();
+              const currentRating = adjustments.rating;
 
-          const originalAspectRatio =
-            selectedImage.width && selectedImage.height 
-              ? selectedImage.width / selectedImage.height 
-              : null;
+              const originalAspectRatio =
+                selectedImage.width && selectedImage.height
+                  ? selectedImage.width / selectedImage.height
+                  : null;
 
-          resetAdjustmentsHistory({ 
-            ...INITIAL_ADJUSTMENTS, 
-            aspectRatio: originalAspectRatio,
-            rating: currentRating, 
-            aiPatches: [] 
-          });
-        },
+              resetAdjustmentsHistory({
+                ...INITIAL_ADJUSTMENTS,
+                aspectRatio: originalAspectRatio,
+                rating: currentRating,
+                aiPatches: [],
+              });
+            },
+          },
+        ],
       },
     ];
     showContextMenu(event.clientX, event.clientY, options);
@@ -3577,7 +3699,7 @@ function App() {
     const autoAdjustLabel = isSingleSelection ? 'Auto Adjust Image' : `Auto Adjust ${selectionCount} Images`;
     const renameLabel = isSingleSelection ? 'Rename Image' : `Rename ${selectionCount} Images`;
     const cullLabel = isSingleSelection ? 'Cull Image' : `Cull ${selectionCount} Images`;
-    const collageLabel = isSingleSelection ? 'Create Collage' : `Create Collage`;
+    const collageLabel = isSingleSelection ? 'Frame Image' : 'Create Collage';
     const stitchLabel = `Stitch Panorama`;
 
     const handleCreateVirtualCopy = async (sourcePath: string) => {
@@ -3596,7 +3718,9 @@ function App() {
       invoke(Invokes.ApplyAutoAdjustmentsToPaths, { paths: finalSelection })
         .then(async () => {
           if (selectedImage && finalSelection.includes(selectedImage.path)) {
-            const metadata: Metadata = await invoke(Invokes.LoadMetadata, { path: selectedImage.path });
+            const metadata: Metadata = await invoke(Invokes.LoadMetadata, {
+              path: selectedImage.path,
+            });
             if (metadata.adjustments && !metadata.adjustments.is_null) {
               const normalized = normalizeLoadedAdjustments(metadata.adjustments);
               setLiveAdjustments(normalized);
@@ -3604,7 +3728,9 @@ function App() {
             }
           }
           if (libraryActivePath && finalSelection.includes(libraryActivePath)) {
-            const metadata: Metadata = await invoke(Invokes.LoadMetadata, { path: libraryActivePath });
+            const metadata: Metadata = await invoke(Invokes.LoadMetadata, {
+              path: libraryActivePath,
+            });
             if (metadata.adjustments && !metadata.adjustments.is_null) {
               const normalized = normalizeLoadedAdjustments(metadata.adjustments);
               setLibraryActiveAdjustments(normalized);
@@ -3620,7 +3746,7 @@ function App() {
     const onExportClick = () => {
       if (selectedImage) {
         if (selectedImage.path !== path) {
-            handleImageSelect(path);
+          handleImageSelect(path);
         }
         setRenderedRightPanel(Panel.Export);
         setActiveRightPanel(Panel.Export);
@@ -3666,7 +3792,8 @@ function App() {
                 : INITIAL_ADJUSTMENTS;
             const adjustmentsToCopy: any = {};
             for (const key of COPYABLE_ADJUSTMENT_KEYS) {
-              if (sourceAdjustments.hasOwnProperty(key)) adjustmentsToCopy[key] = sourceAdjustments[key];
+              if (sourceAdjustments.hasOwnProperty(key))
+                adjustmentsToCopy[key] = sourceAdjustments[key];
             }
             setCopiedAdjustments(adjustmentsToCopy);
             setIsCopied(true);
@@ -3702,18 +3829,18 @@ function App() {
             icon: Grip,
             disabled: !isSingleSelection,
             onClick: () => {
-                setDenoiseModalState({
-                    isOpen: true,
-                    isProcessing: false,
-                    previewBase64: null,
-                    error: null,
-                    targetPath: finalSelection[0],
-                    progressMessage: null
-                });
-            }
+              setDenoiseModalState({
+                isOpen: true,
+                isProcessing: false,
+                previewBase64: null,
+                error: null,
+                targetPath: finalSelection[0],
+                progressMessage: null,
+              });
+            },
           },
           {
-            disabled: selectionCount < 2  || selectionCount > 30,
+            disabled: selectionCount < 2 || selectionCount > 30,
             icon: Images,
             label: stitchLabel,
             onClick: () => {
@@ -3738,7 +3865,9 @@ function App() {
             icon: LayoutTemplate,
             label: collageLabel,
             onClick: () => {
-              const imagesForCollage = imageList.filter(img => finalSelection.includes(img.path));
+              const imagesForCollage = imageList.filter((img) =>
+                finalSelection.includes(img.path),
+              );
               setCollageModalState({
                 isOpen: true,
                 sourceImages: imagesForCollage,
@@ -3757,7 +3886,7 @@ function App() {
                 error: null,
                 pathsToCull: finalSelection,
               }),
-            disabled: imageList.length < 2,
+            disabled: selectionCount < 2,
           },
         ],
       },
@@ -4099,7 +4228,8 @@ function App() {
     folderTree,
     pinnedFolderTrees,
     pinnedFolders,
-    activeTreeSection
+    activeTreeSection,
+    copiedFilePaths
   ]);
 
   const memoizedLibraryView = useMemo(() => (
@@ -4209,7 +4339,8 @@ function App() {
     isPasted,
     copiedAdjustments,
     libraryActiveAdjustments,
-    supportedTypes
+    supportedTypes,
+    copiedFilePaths
   ]);
 
   const renderMainView = () => {
@@ -4276,6 +4407,7 @@ function App() {
               isFullResolution={isFullResolution}
               fullResolutionUrl={fullResolutionUrl}
               isLoadingFullRes={isLoadingFullRes}
+              isRotationActive={isRotationActive}
             />
             <Resizer
               direction={Orientation.Horizontal}
@@ -4363,6 +4495,7 @@ function App() {
                           selectedImage={selectedImage}
                           setAdjustments={setAdjustments}
                           setIsStraightenActive={setIsStraightenActive}
+                          setIsRotationActive={setIsRotationActive}
                         />
                       )}
                       {renderedRightPanel === Panel.Masks && (
@@ -4604,6 +4737,7 @@ const AppWrapper = () => (
   <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY}>
     <ContextMenuProvider>
       <App />
+      <GlobalTooltip />
     </ContextMenuProvider>
   </ClerkProvider>
 );

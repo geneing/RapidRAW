@@ -50,8 +50,6 @@ I started developing this project as a personal challenge when I was 18. My goal
   </tr>
 </table>
 
-Have fun!
-
 <details>
 <summary><strong>For Who Is This?</strong></summary>
 RapidRAW is for photographers who love to edit their photos in a <strong>clean, fast, and simple workflow</strong>. It prioritizes speed, a beautiful user interface, and powerful tools that let you achieve your creative color vision quickly.
@@ -64,6 +62,20 @@ RapidRAW is still in active development and isn't yet as polished as mature tool
 <details>
 <summary><strong>Recent Changes</strong></summary>
 
+*   **2026-02-04:** Global tooltips & major UI polish
+*   **2026-02-03:** New creative effects: Glow, Halation & Lens Flares
+*   **2026-01-31:** Accurate color noise reduction for RAW images & improved image loading
+*   **2026-01-30:** Enhanced Lensfun DB parsing and improved lens matching logic
+*   **2026-01-29:** Add cross-channel copy/paste & flat-line clipping logic for curves
+*   **2026-01-26:** Favorite lens saving, improved rotation controls (finer grid), better local contrast adjustments
+*   **2026-01-25:** Filmstrip performance boost, improved sorting, lens distortion fixes for AI masks & crop
+*   **2026-01-24:** Added automatic lens, TCA & vignette correction using lensfun
+*   **2026-01-22:** Improved and centralized EXIF data handling for greater accuracy and support
+*   **2026-01-21:** Inpainting now works correctly on images with geometry transformations
+
+<details>
+<summary><strong>Expand further</strong></summary>
+
 *   **2026-01-20:** Export preset management for saving export settings 
 *   **2026-01-19:** Preload library for faster startup & automatic geometry transformation helper lines
 *   **2026-01-18:** Implement image geometry transformation utils
@@ -74,11 +86,6 @@ RapidRAW is still in active development and isn't yet as polished as mature tool
 *   **2026-01-11:** Separate preview worker, optional high-quality live previews & mask/ai patch caching
 *   **2026-01-10:** Enhanced EXIF UI, optimized color wheels/curves & rawler update
 *   **2026-01-09:** Live previews for all adjustments & masks with optimized GPU processing
-
-
-<details>
-<summary><strong>Expand further</strong></summary>
-
 *   **2026-01-05:** Collage maker upgrade (drag & drop, zoom, ratio options)
 *   **2026-01-05:** 'Prefer RAW' filter option added to library
 *   **2026-01-05:** Support for uppercase file extensions
@@ -223,41 +230,41 @@ RapidRAW is still in active development and isn't yet as polished as mature tool
     <td valign="top" width="50%">
       <h4>Core Editing Engine</h4>
       <ul>
-        <li><strong>GPU-Accelerated Processing:</strong> All image adjustments are processed on the GPU using a custom WGSL shader for rapid feedback.</li>
-        <li><strong>Masking:</strong> Create masks with AI subject, sky and foreground detection. Combine with traditional Brush, Linear, and Radial masks for great control.</li>
-        <li><strong>Generative Edits:</strong> Remove objects or add new elements with text prompts. Each edit creates a non-destructive patch layer, powered by an optional ComfyUI backend.</li>
-        <li><strong>Full RAW Support:</strong> Supports a wide range of RAW camera formats thanks to rawler.</li>
+        <li><strong>GPU-Accelerated:</strong> Full 32-bit image processing pipeline written in WGSL for instant feedback.</li>
+        <li><strong>Masking:</strong> Layer-based masking with AI subject, sky and foreground detection. Combine with traditional masks for great control.</li>
+        <li><strong>Generative Edits:</strong> Remove or add elements using text prompts, powered by an optional AI backend.</li>
+        <li><strong>Full RAW Support:</strong> Supports a wide range of RAW camera formats through rawler, with JPEG support included.</li>
         <li><strong>Non-Destructive Workflow:</strong> All edits are stored in a <code>.rrdata</code> sidecar file, leaving your original images untouched.</li>
-        <li><strong>32-bit Precision:</strong> Ensures high-quality adjustments without banding or data loss.</li>
+        <li><strong>Lens Correction:</strong> Automatic distortion, TCA, and vignette correction powered by Lensfun.</li>
       </ul>
       <h4>Professional Grade Adjustments</h4>
       <ul>
-        <li><strong>Tonal Controls:</strong> Exposure, Contrast, Highlights, Shadows, Whites, and Blacks.</li>
-        <li><strong>Tone Curves:</strong> Full control over Luma, Red, Green, and Blue channels.</li>
-        <li><strong>Color Grading:</strong> Temperature, Tint, Vibrance, Saturation, and a full HSL color mixer.</li>
+        <li><strong>Tonal Controls:</strong> Exposure, Tone Mapping (including AgX!), Contrast, Highlights, Shadows, Whites, and Blacks.</li>
+        <li><strong>Tone Curves:</strong> Full control over Luma/RGB channels.</li>
+        <li><strong>Color Grading:</strong> Temperature, Tint, Vibrance, Saturation, color wheels and a full HSL color mixer.</li>
         <li><strong>Detail Enhancement:</strong> Sharpening, Clarity, Structure, and Noise Reduction.</li>
-        <li><strong>Effects:</strong> LUTs, Dehaze, Vignette, and Film Grain simulation.</li>
-        <li><strong>Transform Tools:</strong> Crop with aspect ratio locking, Rotate, and Flip.</li>
+        <li><strong>Effects:</strong> LUTs, Dehaze, Vignette, Glow, Halation, Flares and Film Grain.</li>
+        <li><strong>Transform Tools:</strong> Perspective correction, rotation, straightening, crop, and warping tools.</li>
       </ul>
     </td>
     <td valign="top" width="50%">
       <h4>Library & Workflow</h4>
       <ul>
-        <li><strong>Image Library:</strong> Effortlessly sort, rate, tag, and manage your entire photo collection for a streamlined and efficient workflow.</li>
-        <li><strong>Folder Management:</strong> Integrated folder tree, create, rename, and delete folders directly within the app.</li>
-        <li><strong>File Operations:</strong> Import, copy, move, rename, and duplicate images and their associated edits.</li>
+        <li><strong>Image Library:</strong> Effortlessly manage and cull your entire photo collection for a streamlined and efficient workflow.</li>
+        <li><strong>Organization:</strong> Recursive folder view, virtual copies, color labels, star ratings, tags and more.</li>
+        <li><strong>File Operations:</strong> Import, copy, move, rename, and duplicate images/folders.</li>
         <li><strong>Filmstrip View:</strong> Quickly navigate between all the images in your current folder while editing.</li>
         <li><strong>Batch Operations:</strong> Save significant time by applying a consistent set of adjustments or exporting entire batches of images simultaneously.</li>
-        <li><strong>EXIF Data Viewer:</strong> Gain insights by inspecting the complete metadata from your camera, including shutter speed, aperture, ISO, and lens information.</li>
+        <li><strong>EXIF Data Viewer:</strong> Gain insights by inspecting the complete metadata from your camera.</li>
       </ul>
       <h4>Productivity & UI</h4>
       <ul>
-        <li><strong>Preset System:</strong> Create, save, import, and export your favorite looks.</li>
+        <li><strong>Preset System:</strong> Create, save, import, and share your favorite looks.</li>
         <li><strong>Copy & Paste Settings:</strong> Quickly transfer adjustments between images.</li>
         <li><strong>Undo/Redo History:</strong> A robust history system for every edit.</li>
         <li><strong>Customizable UI:</strong> Resizable panels and multiple beautiful UI themes with smooth animations.</li>
-        <li><strong>Panorama Stitcher:</strong> Seamlessly combine multiple images into a wide panorama.</li>
-        <li><strong>Exporting:</strong> Control file format, quality, naming scheme, metadata, resizing options on export.</li>
+        <li><strong>Compositions:</strong> Built-in seamless Panorama Stitcher and flexible Collage Maker.</li>
+        <li><strong>Exporting:</strong> Control file format, watermarking, naming scheme, metadata, resizing options on export.</li>
       </ul>
     </td>
   </tr>
@@ -315,16 +322,13 @@ Here's RapidRAW in action.
 
 ## The Idea
 
-#### The Motivation
-As a photography enthusiast, I often found existing software to be sluggish and resource-heavy on my machine. Born from the desire for a more responsive and streamlined photo editing experience, I set out to build my own. The goal was to create a tool that was not only fast but also helped me learn the details of digital image processing and camera technology.
+As a photography enthusiast, I often found existing software to be sluggish and resource-heavy on my machine. Born from the desire for a more responsive and streamlined photo editing experience, I set out to build my own. The goal was to create a tool that was not only fast but **also helped me learn the details of digital image processing and camera technology**.
 
-#### The Challenge
 I set an ambitious goal to rapidly build a functional, feature-rich application from an empty folder. This personal challenge pushed me to learn quickly and focus intensely on the core architecture and user experience.
 
-#### The Process
 The foundation is built on Rust for its safety and performance, and Tauri for its ability to create lightweight, cross-platform desktop apps with a web frontend. The entire image processing pipeline is offloaded to the GPU via WGPU and a custom WGSL shader, ensuring that even on complex edits with multiple masks, the UI remains fluid.
 
-I am **immensely grateful for Google's Gemini suite of AI models.** As an 18-year-old without a formal background in advanced mathematics or image science, the AI Studio's free tier was an invaluable assistant, helping me research and implement concepts like the Menon demosaicing algorithm.
+I am **immensely grateful for Google's Gemini suite of AI models.** As an 18-year-old without a formal background in advanced mathematics or image science, the AI Studio's free tier was an invaluable assistant, helping me research and implement complex concepts in record time.
 
 ## Current Priorities
 
@@ -337,7 +341,7 @@ While the core functionality is in place, I'm actively working on improving seve
 | Write a tutorial on how to connect ComfyUI with RapidRAW                                    | Medium | Medium       | [ ]    |
 | Centralize Coordinate Transformation Logic - See [#245](https://github.com/CyberTimon/RapidRAW/issues/245) | Medium      | High | [ ]    |
 | Improve speed on older systems (e.g. Pascal GPUs)                                            | Medium   | High       | [ ]    |
-| Implement warping tools                                                                     | Low  | High       | [ ]    |
+| Implement warping tools                                                                     | Low  | High       | [X]    |
 
 ## AI Roadmap
 
@@ -367,7 +371,7 @@ This setup gives you the best of both worlds: a highly efficient workflow while 
 
 To be clear, **I won't lock features behind a paywall.** All of RapidRAW's functionality is available for free if you use the built-in tools or self-host.
 
-However, I realize that not everyone has the powerful hardware or technical desire to set up and maintain their own ComfyUI server. For those who want a simpler solution, I will be offering an optional **$5/month subscription** (pricing is not final).
+However, I realize that not everyone has the powerful hardware or technical desire to set up and maintain their own ComfyUI server. For those who want a simpler solution, I will be offering an optional **$TBD/month subscription**.
 
 This is purely a **convenience service**. It provides the **same high-quality results** as a self-hosted setup without any of the hassle - just log in, and it works. Subscribing is also the best way to support the project and help me dedicate more time to its development.
 
@@ -446,11 +450,29 @@ npm start
 
 RapidRAW is built to be lightweight and cross-platform. The minimum (tested) requirements are:
 
+**Operating System:**
 *   **Windows:** Windows 10 or newer
 *   **macOS:** macOS 13 (Ventura) or newer
 *   **Linux:** Ubuntu 22.04+ or a compatible modern distribution
 
+**Hardware Recommendations:**
+*   **RAM:** **16GB or more is highly recommended.** While the application may run on systems with less memory, performance is best with 16GB+ to handle high-resolution RAW files, undo history, and complex layer masking without slowdowns.
+*   **GPU:** A dedicated GPU is recommended. RapidRAW relies heavily on GPU acceleration for its processing pipeline. Very old GPU architectures (generally pre-2015) or older integrated graphics may struggle, leading to instability or graphical artifacts.
+
 ### Common Problems
+
+<details>
+<summary>App crashes when opening an image / entering edit mode</summary>
+
+If the application crashes immediately when you try to start editing a picture, it is often due to the automatic selection of the GPU backend.
+
+1.  Open **Settings** on the **Home Screen** (Gear icon).
+2.  Navigate to the **Processing** tab.
+3.  Locate the **Processing Backend** setting.
+4.  Change it from **Auto** to a specific backend supported by your OS (e.g., **Vulkan**, **DirectX12**, **OpenGL**, or **Metal**).
+5.  Restart the application and try opening the image again. Experiment with different backends if the first one doesn't work.
+</details>
+
 <details>
 <summary>Linux Wayland/WebKit Crash</summary>
 
@@ -490,6 +512,7 @@ A huge thank you to the following projects and tools that were very important in
 
 *   **[Google AI Studio](https://aistudio.google.com):** For providing amazing assistance in researching, implementing image processing algorithms and giving an overall speed boost.
 *   **[rawler](https://github.com/dnglab/dnglab/tree/main/rawler):** For the excellent Rust crate that provides the foundation for RAW file processing in this project.
+*   **[lensfun](https://lensfun.github.io/):** For its invaluable open-source library and comprehensive database for automatic lens correction.
 *   **[pixls.us](https://discuss.pixls.us/):** For being an incredible community full of knowledgeable people who offered inspiration, advice, and ideas.
 *   **[darktable & co.](https://github.com/darktable-org/darktable):** For some reference implementations that guided parts of this work.
 *   **You:** For using and supporting RapidRAW. Your interest keeps this project alive and evolving.
@@ -500,9 +523,9 @@ As an 18-year-old developer balancing this project with an apprenticeship, your 
 
 -   **Ko-fi:** [Donate on Ko-fi](https://ko-fi.com/cybertimon)
 -   **Crypto:**
-    -   BTC: `36yHjo2dkBwQ63p3YwtqoYAohoZhhUTkCJ` (min. 0.0001 because of broker)
-    -   ETH: `0x597e6bdb97f3d0f1602b5efc8f3b7beb21eaf74a` (min. 0.005 because of broker)
-    -   SOL: `CkXM3C777S8iJX9h3MGSfwGxb85Yx7GHmynQUFSbZXUL` (min. 0.01 because of broker)
+    -   BTC: `36yHjo2dkBwQ63p3YwtqoYAohoZhhUTkCJ` (min. 0.0001)
+    -   ETH: `0x597e6bdb97f3d0f1602b5efc8f3b7beb21eaf74a` (min. 0.005)
+    -   SOL: `CkXM3C777S8iJX9h3MGSfwGxb85Yx7GHmynQUFSbZXUL` (min. 0.01)
 
 ## License & Philosophy
 

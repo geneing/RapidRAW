@@ -609,12 +609,11 @@ export default function AIPanel({
     >
       <div className="flex flex-col h-full select-none overflow-hidden" onClick={handleDeselect}>
         <div className="p-4 flex justify-between items-center flex-shrink-0 border-b border-surface h-[69px]">
-          <h2 className="text-xl font-bold text-primary text-shadow-shiny">AI Tools</h2>
+          <h2 className="text-xl font-bold text-primary text-shadow-shiny">Inpainting</h2>
           <button
             className="p-2 rounded-full hover:bg-surface transition-colors"
-            disabled={!adjustments.aiPatches?.length || isGeneratingAi}
             onClick={handleResetAllAiEdits}
-            title="Reset All AI Edits"
+            title="Reset Inpainting"
           >
             <RotateCcw size={18} />
           </button>
@@ -644,6 +643,7 @@ export default function AIPanel({
                         key={typeToRender.type}
                         maskType={typeToRender}
                         isGenerating={isGeneratingAi}
+                        activePatchContainerId={activePatchContainerId}
                         onClick={() =>
                           isComponentMode
                             ? handleAddSubMask(activePatchContainerId, typeToRender.type)
@@ -822,7 +822,7 @@ function NewMaskDropZone({ isOver }: { isOver: boolean }) {
   );
 }
 
-function DraggableGridItem({ maskType, isGenerating, onClick }: any) {
+function DraggableGridItem({ maskType, isGenerating, onClick, activePatchContainerId }: any) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `create-ai-${maskType.type}`,
     data: { type: 'Creation', maskType: maskType.type },
@@ -838,7 +838,7 @@ function DraggableGridItem({ maskType, isGenerating, onClick }: any) {
       className={`bg-surface text-text-primary rounded-lg p-2 flex flex-col items-center justify-center gap-1.5 aspect-square transition-colors 
               ${maskType.disabled || isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-card-active active:bg-accent/20'} 
               ${isDragging ? 'opacity-50' : ''}`}
-      title={maskType.disabled ? 'Coming Soon' : `Add ${maskType.name}`}
+      title={maskType.disabled ? 'Coming Soon' : activePatchContainerId ? `Add ${maskType.name} to Current Edit` : `Create New ${maskType.name} Edit`}
     >
       <maskType.icon size={24} /> <span className="text-xs">{maskType.name}</span>
     </button>
@@ -992,6 +992,7 @@ function ContainerRow({
         <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             className="p-1 hover:text-text-primary text-text-secondary"
+            title={container.visible ? "Hide Edit" : "Show Edit"}
             onClick={(e) => {
               e.stopPropagation();
               updateContainer(container.id, { visible: !container.visible });
@@ -1001,6 +1002,7 @@ function ContainerRow({
           </button>
           <button
             className="p-1 hover:text-red-500 text-text-secondary"
+            title="Delete Edit"
             onClick={(e) => {
               e.stopPropagation();
               handleDelete(container.id);
@@ -1044,6 +1046,7 @@ function ContainerRow({
                   updateSubMask={updateSubMask}
                   handleDelete={() => handleDeleteSubMask(container.id, subMask.id)}
                   analyzingSubMaskId={analyzingSubMaskId}
+                  isParentLoading={container.isLoading}
                 />
               ))}
             </AnimatePresence>
@@ -1076,6 +1079,7 @@ function SubMaskRow({
   handleDelete,
   activeDragItem,
   analyzingSubMaskId,
+  isParentLoading,
 }: any) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: subMask.id,
@@ -1094,7 +1098,7 @@ function SubMaskRow({
   const [isHovered, setIsHovered] = useState(false);
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDraggingContainer = activeDragItem?.type === 'Container';
-  const isAnalyzing = subMask.id === analyzingSubMaskId;
+  const isAnalyzing = subMask.id === analyzingSubMaskId || (isParentLoading && subMask.type === Mask.QuickEraser);
 
   const handleMouseEnter = () => {
     if (hoverTimeoutRef.current) {
@@ -1189,7 +1193,7 @@ function SubMaskRow({
       <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           className="p-1 hover:bg-bg-primary rounded text-text-secondary"
-          title={subMask.mode === SubMaskMode.Additive ? 'Add' : 'Subtract'}
+          title={subMask.mode === SubMaskMode.Additive ? "Switch to Subtract" : "Switch to Add"}
           onClick={(e) => {
             e.stopPropagation();
             updateSubMask(subMask.id, {
@@ -1201,6 +1205,7 @@ function SubMaskRow({
         </button>
         <button
           className="p-1 hover:text-red-500 text-text-secondary"
+          title="Delete Component"
           onClick={(e) => {
             e.stopPropagation();
             handleDelete();
@@ -1315,7 +1320,6 @@ function SettingsPanel({
                     disabled={isGeneratingAi || displayContainer.isLoading}
                     onChange={(e: any) => {
                       setPrompt(e.target.value);
-                      // Optionally update container live if desired, or just on blur
                     }}
                     onBlur={() => isActive && updateContainer(container.id, { prompt })}
                     onKeyDown={(e: any) => {
@@ -1372,8 +1376,11 @@ function SettingsPanel({
           {isComponentMode && (
             <>
               {isAiMask && aiModelDownloadStatus && (
-                <div className="text-xs text-accent text-center bg-accent/10 p-1 rounded">
-                  Downloading Model: {aiModelDownloadStatus}
+                <div className="p-3 mb-4 bg-card-active rounded-md border border-surface flex items-center gap-3">
+                  <Loader2 size={16} className="text-accent animate-spin flex-shrink-0" />
+                  <div className="text-xs text-text-secondary leading-relaxed">
+                    AI Model Downloading: <span className="text-accent font-medium">{aiModelDownloadStatus}</span>
+                  </div>
                 </div>
               )}
               

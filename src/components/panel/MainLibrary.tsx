@@ -1160,6 +1160,12 @@ export default function MainLibrary({
   const [isLoaderVisible, setIsLoaderVisible] = useState(false);
   const loadedThumbnailsRef = useRef(new Set<string>());
 
+  const prevScrollState = useRef({
+    path: null as string | null,
+    top: -1,
+    folder: null as string | null,
+  });
+
   const groups = useMemo(() => {
     if (libraryViewMode === LibraryViewMode.Flat) return null;
     return groupImagesByFolder(imageList, currentFolderPath);
@@ -1232,23 +1238,38 @@ export default function MainLibrary({
     }
 
     if (found && outerRef.current) {
-      const element = outerRef.current;
-      const clientHeight = element.clientHeight;
-      const scrollTop = element.scrollTop;
-      const itemBottom = targetTop + rowHeight;
-      const SCROLL_OFFSET = 120;
+      const prev = prevScrollState.current;
 
-      if (itemBottom > scrollTop + clientHeight) {
-        element.scrollTo({
-          top: itemBottom - clientHeight + SCROLL_OFFSET,
-          behavior: 'smooth',
-        });
-      }
-      else if (targetTop < scrollTop) {
-        element.scrollTo({
-          top: targetTop - SCROLL_OFFSET,
-          behavior: 'smooth',
-        });
+      const shouldScroll = 
+        activePath !== prev.path || 
+        Math.abs(targetTop - prev.top) > 1 || 
+        currentFolderPath !== prev.folder;
+
+      if (shouldScroll) {
+        const element = outerRef.current;
+        const clientHeight = element.clientHeight;
+        const scrollTop = element.scrollTop;
+        const itemBottom = targetTop + rowHeight;
+        const SCROLL_OFFSET = 120;
+
+        if (itemBottom > scrollTop + clientHeight) {
+          element.scrollTo({
+            top: itemBottom - clientHeight + SCROLL_OFFSET,
+            behavior: 'smooth',
+          });
+        }
+        else if (targetTop < scrollTop) {
+          element.scrollTo({
+            top: targetTop - SCROLL_OFFSET,
+            behavior: 'smooth',
+          });
+        }
+
+        prevScrollState.current = {
+          path: activePath,
+          top: targetTop,
+          folder: currentFolderPath
+        };
       }
     }
   }, [activePath, imageList, libraryViewMode, thumbnailSize, currentFolderPath, multiSelectedPaths.length]);
@@ -1441,7 +1462,7 @@ export default function MainLibrary({
                       className="px-3 bg-surface text-text-primary shadow-none h-11"
                       onClick={() => setShowSettings(true)}
                       size="lg"
-                      title="Settings"
+                      title="Go to Settings"
                       variant="ghost"
                     >
                       <Settings size={20} />
@@ -1524,7 +1545,7 @@ export default function MainLibrary({
     >
       <header className="p-4 flex-shrink-0 flex justify-between items-center border-b border-border-color gap-4">
         <div className="min-w-0">
-          <h2 className="text-2xl font-bold text-primary">Library</h2>
+          <h2 className="text-2xl font-bold text-primary text-shadow-shiny">Library</h2>
           <div className="flex items-center gap-2">
             <p className="text-sm text-text-secondary truncate">{currentFolderPath}</p>
             <div
@@ -1593,7 +1614,7 @@ export default function MainLibrary({
           <Button
             className="h-12 w-12 bg-surface text-text-primary shadow-none p-0 flex items-center justify-center"
             onClick={onGoHome}
-            title="Go to Home Screen"
+            title="Go to Home"
           >
             <Home className="w-8 h-8" />
           </Button>

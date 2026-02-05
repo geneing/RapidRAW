@@ -18,6 +18,7 @@ const formatLabel = (key: string) => key.replace(/([A-Z])/g, ' $1').replace(/^./
 const DEFAULT_SETTINGS: CopyPasteSettings = {
   mode: PasteMode.Merge,
   includedAdjustments: COPYABLE_ADJUSTMENT_KEYS,
+  knownAdjustments: [],
 };
 
 const pasteModeOptions = [

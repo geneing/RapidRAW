@@ -23,6 +23,7 @@ mod preset_converter;
 mod raw_processing;
 mod tagging;
 mod tagging_utils;
+mod lens_correction;
 
 use log;
 use std::collections::{HashMap, hash_map::DefaultHasher};
@@ -134,6 +135,8 @@ pub struct AppState {
     pub patch_cache: Mutex<HashMap<String, serde_json::Value>>,
     pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>, 
     pub thumbnail_geometry_cache: Mutex<HashMap<String, (u64, DynamicImage, f32)>>,
+    pub lens_db: Mutex<Option<lens_correction::LensDatabase>>,
+    pub load_image_generation: Arc<AtomicUsize>,
 }
 
 #[derive(serde::Serialize)]
@@ -243,6 +246,15 @@ fn apply_all_transformations(
     (cropped_image, unscaled_crop_offset)
 }
 
+const GEOMETRY_KEYS: &[&str] = &[
+    "transformDistortion", "transformVertical", "transformHorizontal",
+    "transformRotate", "transformAspect", "transformScale",
+    "transformXOffset", "transformYOffset", "lensDistortionAmount",
+    "lensVignetteAmount", "lensTcaAmount", "lensDistortionParams",
+    "lensMaker", "lensModel", "lensDistortionEnabled", 
+    "lensTcaEnabled", "lensVignetteEnabled"
+];
+
 pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
     let mut hasher = DefaultHasher::new();
 
@@ -252,14 +264,9 @@ pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
 
     adjustments["orientationSteps"].as_u64().hash(&mut hasher);
 
-    let geo_keys = [
-        "transformDistortion", "transformVertical", "transformHorizontal",
-        "transformRotate", "transformAspect", "transformScale", 
-        "transformXOffset", "transformYOffset"
-    ];
-
-    for key in geo_keys {
+    for key in GEOMETRY_KEYS {
         if let Some(val) = adjustments.get(key) {
+            key.hash(&mut hasher);
             val.to_string().hash(&mut hasher); 
         }
     }
@@ -273,12 +280,12 @@ fn calculate_visual_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
 
     if let Some(obj) = adjustments.as_object() {
         for (key, value) in obj {
+            if GEOMETRY_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+
             match key.as_str() {
-                "transformDistortion" | "transformVertical" | "transformHorizontal" | "transformRotate" |
-                "transformAspect" | "transformScale" | "transformXOffset" | "transformYOffset" => (),
-
                 "crop" | "rotation" | "orientationSteps" | "flipHorizontal" | "flipVertical" => (),
-
                 _ => {
                     key.hash(&mut hasher);
                     value.to_string().hash(&mut hasher);
@@ -311,22 +318,12 @@ fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
         }
     }
 
-    let transform_distortion = adjustments["transformDistortion"].as_f64().unwrap_or(0.0);
-    (transform_distortion.to_bits()).hash(&mut hasher);
-    let transform_vertical = adjustments["transformVertical"].as_f64().unwrap_or(0.0);
-    (transform_vertical.to_bits()).hash(&mut hasher);
-    let transform_horizontal = adjustments["transformHorizontal"].as_f64().unwrap_or(0.0);
-    (transform_horizontal.to_bits()).hash(&mut hasher);
-    let transform_rotate = adjustments["transformRotate"].as_f64().unwrap_or(0.0);
-    (transform_rotate.to_bits()).hash(&mut hasher);
-    let transform_aspect = adjustments["transformAspect"].as_f64().unwrap_or(0.0);
-    (transform_aspect.to_bits()).hash(&mut hasher);
-    let transform_scale = adjustments["transformScale"].as_f64().unwrap_or(100.0);
-    (transform_scale.to_bits()).hash(&mut hasher);
-    let transform_x_offset = adjustments["transformXOffset"].as_f64().unwrap_or(0.0);
-    (transform_x_offset.to_bits()).hash(&mut hasher);
-    let transform_y_offset = adjustments["transformYOffset"].as_f64().unwrap_or(0.0);
-    (transform_y_offset.to_bits()).hash(&mut hasher);
+    for key in GEOMETRY_KEYS {
+        if let Some(val) = adjustments.get(key) {
+            key.hash(&mut hasher);
+            val.to_string().hash(&mut hasher);
+        }
+    }
 
     if let Some(patches_val) = adjustments.get("aiPatches") {
         if let Some(patches_arr) = patches_val.as_array() {
@@ -498,6 +495,10 @@ async fn load_image(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<LoadImageResult, String> {
+    let my_generation = state.load_image_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let generation_tracker = state.load_image_generation.clone();
+    let cancel_token = Some((generation_tracker.clone(), my_generation));
+
     let (source_path, sidecar_path) = parse_virtual_path(&path);
     let source_path_str = source_path.to_string_lossy().to_string();
 
@@ -512,12 +513,21 @@ async fn load_image(
     let highlight_compression = settings.raw_highlight_compression.unwrap_or(2.5);
 
     let path_clone = source_path_str.clone();
+
     let (pristine_img, exif_data) = tokio::task::spawn_blocking(move || {
+        if generation_tracker.load(Ordering::SeqCst) != my_generation {
+            return Err("Load cancelled".to_string());
+        }
+
         let result: Result<(DynamicImage, HashMap<String, String>), String> = (|| {
             match read_file_mapped(Path::new(&path_clone)) {
                 Ok(mmap) => {
+                    if generation_tracker.load(Ordering::SeqCst) != my_generation {
+                        return Err("Load cancelled".to_string());
+                    }
+
                     let img =
-                        load_base_image_from_bytes(&mmap, &path_clone, false, highlight_compression)
+                        load_base_image_from_bytes(&mmap, &path_clone, false, highlight_compression, cancel_token.clone())
                             .map_err(|e| e.to_string())?;
                     let exif = exif_processing::read_exif_data(&path_clone, &mmap);
                     Ok((img, exif))
@@ -531,11 +541,17 @@ async fn load_image(
                     let bytes = fs::read(&path_clone).map_err(|io_err| {
                         format!("Fallback read failed for {}: {}", path_clone, io_err)
                     })?;
+
+                    if generation_tracker.load(Ordering::SeqCst) != my_generation {
+                        return Err("Load cancelled".to_string());
+                    }
+
                     let img = load_base_image_from_bytes(
                         &bytes,
                         &path_clone,
                         false,
                         highlight_compression,
+                        cancel_token.clone()
                     )
                     .map_err(|e| e.to_string())?;
                     let exif = exif_processing::read_exif_data(&path_clone, &bytes);
@@ -548,8 +564,17 @@ async fn load_image(
     .await
     .map_err(|e| e.to_string())??;
 
-    let (orig_width, orig_height) = pristine_img.dimensions();
+    if state.load_image_generation.load(Ordering::SeqCst) != my_generation {
+        return Err("Load cancelled".to_string());
+    }
+
     let is_raw = is_raw_file(&source_path_str);
+
+    if state.load_image_generation.load(Ordering::SeqCst) != my_generation {
+        return Err("Load cancelled".to_string());
+    }
+
+    let (orig_width, orig_height) = pristine_img.dimensions();
 
     *state.cached_preview.lock().unwrap() = None;
     *state.gpu_image_cache.lock().unwrap() = None;
@@ -930,14 +955,19 @@ fn generate_uncropped_preview(
         let orientation_steps = adjustments_clone["orientationSteps"].as_u64().unwrap_or(0) as u8;
         let coarse_rotated_image = apply_coarse_rotation(warped_image, orientation_steps);
 
+        let flip_horizontal = adjustments_clone["flipHorizontal"].as_bool().unwrap_or(false);
+        let flip_vertical = adjustments_clone["flipVertical"].as_bool().unwrap_or(false);
+        
+        let flipped_image = apply_flip(coarse_rotated_image, flip_horizontal, flip_vertical);
+
         let settings = load_settings(app_handle.clone()).unwrap_or_default();
         let preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
 
-        let (rotated_w, rotated_h) = coarse_rotated_image.dimensions();
+        let (rotated_w, rotated_h) = flipped_image.dimensions();
 
         let (processing_base, scale_for_gpu) = if rotated_w > preview_dim || rotated_h > preview_dim
         {
-            let base = downscale_f32_image(&coarse_rotated_image, preview_dim, preview_dim);
+            let base = downscale_f32_image(&flipped_image, preview_dim, preview_dim);
             let scale = if rotated_w > 0 {
                 base.width() as f32 / rotated_w as f32
             } else {
@@ -945,7 +975,7 @@ fn generate_uncropped_preview(
             };
             (base, scale)
         } else {
-            (coarse_rotated_image.clone(), 1.0)
+            (flipped_image.clone(), 1.0)
         };
 
         let (preview_width, preview_height) = processing_base.dimensions();
@@ -1044,12 +1074,16 @@ fn generate_original_transformed_preview(
 async fn preview_geometry_transform(
     params: GeometryParams,
     js_adjustments: serde_json::Value,
-    show_lines: bool, // New parameter to control line generation
+    show_lines: bool,
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    let loaded_image_path = state.original_image.lock().unwrap()
-        .as_ref().ok_or("No image loaded")?.path.clone();
+    let (loaded_image_path, is_raw) = {
+        let guard = state.original_image.lock().unwrap();
+        let loaded = guard.as_ref().ok_or("No image loaded")?;
+        (loaded.path.clone(), loaded.is_raw)
+    };
+
     let visual_hash = calculate_visual_hash(&loaded_image_path, &js_adjustments);
 
     let base_image_to_warp = {
@@ -1060,10 +1094,10 @@ async fn preview_geometry_transform(
         } else {
             let context = get_or_init_gpu_context(&state)?;
             
-            let (original_image, is_raw) = {
+            let original_image = {
                 let guard = state.original_image.lock().unwrap();
                 let loaded = guard.as_ref().ok_or("No image loaded")?;
-                (loaded.image.clone(), loaded.is_raw)
+                loaded.image.clone()
             };
 
             let settings = load_settings(app_handle.clone()).unwrap_or_default();
@@ -1084,14 +1118,29 @@ async fn preview_geometry_transform(
                 obj.insert("orientationSteps".to_string(), serde_json::json!(0));
                 obj.insert("flipHorizontal".to_string(), serde_json::json!(false));
                 obj.insert("flipVertical".to_string(), serde_json::json!(false));
-                obj.insert("transformDistortion".to_string(), serde_json::json!(0.0));
-                obj.insert("transformVertical".to_string(), serde_json::json!(0.0));
-                obj.insert("transformHorizontal".to_string(), serde_json::json!(0.0));
-                obj.insert("transformRotate".to_string(), serde_json::json!(0.0));
-                obj.insert("transformAspect".to_string(), serde_json::json!(0.0));
-                obj.insert("transformScale".to_string(), serde_json::json!(100.0));
-                obj.insert("transformXOffset".to_string(), serde_json::json!(0.0));
-                obj.insert("transformYOffset".to_string(), serde_json::json!(0.0));
+                for key in GEOMETRY_KEYS {
+                    match *key {
+                        "transformScale" |
+                        "lensDistortionAmount" | 
+                        "lensVignetteAmount" | 
+                        "lensTcaAmount" => {
+                            obj.insert(key.to_string(), serde_json::json!(100.0));
+                        },
+                        "lensDistortionParams" |
+                        "lensMaker" | 
+                        "lensModel" => {
+                            obj.insert(key.to_string(), serde_json::Value::Null);
+                        },
+                        "lensDistortionEnabled" | 
+                        "lensTcaEnabled" | 
+                        "lensVignetteEnabled" => {
+                            obj.insert(key.to_string(), serde_json::json!(true)); 
+                        },
+                        _ => {
+                            obj.insert(key.to_string(), serde_json::json!(0.0));
+                        }
+                    }
+                }
             }
 
             let all_adjustments = get_all_adjustments_from_json(&temp_adjustments, is_raw);
@@ -1121,7 +1170,15 @@ async fn preview_geometry_transform(
     };
 
     let final_image = tokio::task::spawn_blocking(move || -> DynamicImage {
-        let warped_image = warp_image_geometry(&base_image_to_warp, params);
+        let mut adjusted_params = params;
+
+        if is_raw { // approximate linear vignetting correction on gamma-baked & tonemapped geometry preview
+            adjusted_params.lens_vignette_amount *= 0.4;
+        } else {
+            adjusted_params.lens_vignette_amount *= 0.8;
+        }
+
+        let warped_image = warp_image_geometry(&base_image_to_warp, adjusted_params);
         let orientation_steps = js_adjustments["orientationSteps"].as_u64().unwrap_or(0) as u8;
         let flip_horizontal = js_adjustments["flipHorizontal"].as_bool().unwrap_or(false);
         let flip_vertical = js_adjustments["flipVertical"].as_bool().unwrap_or(false);
@@ -1565,7 +1622,8 @@ async fn batch_export_images(
                         } else {
                             ImageMetadata::default()
                         };
-                        let js_adjustments = metadata.adjustments;
+                        let mut js_adjustments = metadata.adjustments; 
+                        hydrate_adjustments(&state, &mut js_adjustments);
                         let is_raw = is_raw_file(&source_path_str);
 
                         let base_image = match read_file_mapped(Path::new(&source_path_str)) {
@@ -1575,6 +1633,7 @@ async fn batch_export_images(
                                 &js_adjustments,
                                 false,
                                 highlight_compression,
+                                None,
                             )
                             .map_err(|e| format!("Failed to load image from mmap: {}", e))?,
                             Err(e) => {
@@ -1592,6 +1651,7 @@ async fn batch_export_images(
                                     &js_adjustments,
                                     false,
                                     highlight_compression,
+                                    None,
                                 )
                                 .map_err(|e| format!("Failed to load image from bytes: {}", e))?
                             }
@@ -1883,7 +1943,7 @@ async fn estimate_batch_export_size(
     const ESTIMATE_DIM: u32 = 1280;
 
     let original_image = match read_file_mapped(Path::new(&source_path_str)) {
-        Ok(mmap) => load_base_image_from_bytes(&mmap, &source_path_str, true, highlight_compression)
+        Ok(mmap) => load_base_image_from_bytes(&mmap, &source_path_str, true, highlight_compression, None)
             .map_err(|e| e.to_string())?,
         Err(e) => {
             log::warn!(
@@ -1892,7 +1952,7 @@ async fn estimate_batch_export_size(
                 e
             );
             let bytes = fs::read(&source_path_str).map_err(|io_err| io_err.to_string())?;
-            load_base_image_from_bytes(&bytes, &source_path_str, true, highlight_compression)
+            load_base_image_from_bytes(&bytes, &source_path_str, true, highlight_compression, None)
                 .map_err(|e| e.to_string())?
         }
     };
@@ -2135,14 +2195,12 @@ async fn generate_ai_subject_mask(
         let mut hasher = blake3::Hasher::new();
         hasher.update(path.as_bytes());
         let mut geo_hasher = DefaultHasher::new();
-        js_adjustments["transformDistortion"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformVertical"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformHorizontal"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformRotate"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformAspect"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformScale"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformXOffset"].to_string().hash(&mut geo_hasher);
-        js_adjustments["transformYOffset"].to_string().hash(&mut geo_hasher);
+        for key in GEOMETRY_KEYS {
+            if let Some(val) = js_adjustments.get(key) {
+                key.hash(&mut geo_hasher);
+                val.to_string().hash(&mut geo_hasher);
+            }
+        }
         hasher.update(&geo_hasher.finish().to_le_bytes());
 
 
@@ -2584,7 +2642,7 @@ async fn generate_all_community_previews(
         let source_path_str = source_path.to_string_lossy().to_string();
         let image_bytes = fs::read(&source_path).map_err(|e| e.to_string())?;
         let original_image =
-            crate::image_loader::load_base_image_from_bytes(&image_bytes, &source_path_str, true, highlight_compression )
+            crate::image_loader::load_base_image_from_bytes(&image_bytes, &source_path_str, true, highlight_compression, None)
                 .map_err(|e| e.to_string())?;
         let is_raw = is_raw_file(&source_path_str);
         base_thumbnails.push((
@@ -2934,6 +2992,7 @@ fn generate_preview_for_path(
             &js_adjustments,
             false,
             highlight_compression,
+            None,
         )
         .map_err(|e| e.to_string())?,
         Err(e) => {
@@ -2949,6 +3008,7 @@ fn generate_preview_for_path(
                 &js_adjustments,
                 false,
                 highlight_compression,
+                None,
             )
             .map_err(|e| e.to_string())?
         }
@@ -3183,6 +3243,10 @@ fn main() {
             let app_handle = app.handle().clone();
             let settings: AppSettings = load_settings(app_handle.clone()).unwrap_or_default();
 
+            let lens_db = lens_correction::load_lensfun_db(&app_handle);
+            let state = app.state::<AppState>();
+            *state.lens_db.lock().unwrap() = Some(lens_db);
+
             unsafe {
                 if let Some(backend) = &settings.processing_backend {
                     if backend != "auto" {
@@ -3268,6 +3332,8 @@ fn main() {
             patch_cache: Mutex::new(HashMap::new()),
             geometry_cache: Mutex::new(HashMap::new()),
             thumbnail_geometry_cache: Mutex::new(HashMap::new()),
+            lens_db: Mutex::new(None),
+            load_image_generation: Arc::new(AtomicUsize::new(0)),
         })
         .invoke_handler(tauri::generate_handler![
             load_image,
@@ -3304,6 +3370,7 @@ fn main() {
             save_temp_file,
             get_image_dimensions,
             frontend_ready,
+            cancel_thumbnail_generation,
             image_processing::generate_histogram,
             image_processing::generate_waveform,
             image_processing::calculate_auto_adjustments,
@@ -3314,7 +3381,6 @@ fn main() {
             file_management::get_pinned_folder_trees,
             file_management::generate_thumbnails,
             file_management::generate_thumbnails_progressive,
-            cancel_thumbnail_generation,
             file_management::create_folder,
             file_management::delete_folder,
             file_management::copy_files,
@@ -3349,21 +3415,31 @@ fn main() {
             tagging::add_tag_for_paths,
             tagging::remove_tag_for_paths,
             culling::cull_images,
+            lens_correction::get_lensfun_makers,
+            lens_correction::get_lensfun_lenses_for_maker,
+            lens_correction::autodetect_lens,
+            lens_correction::get_lens_distortion_params,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(#[allow(unused_variables)] |app_handle, event| {
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = event {
-                if let Some(url) = urls.first() {
-                    if let Ok(path) = url.to_file_path() {
-                        if let Some(path_str) = path.to_str() {
-                            let state = app_handle.state::<AppState>();
-                            *state.initial_file_path.lock().unwrap() = Some(path_str.to_string());
-                            log::info!("macOS initial open: Stored path {} for later.", path_str);
+            match event {
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Opened { urls } => {
+                    if let Some(url) = urls.first() {
+                        if let Ok(path) = url.to_file_path() {
+                            if let Some(path_str) = path.to_str() {
+                                let state = app_handle.state::<AppState>();
+                                *state.initial_file_path.lock().unwrap() = Some(path_str.to_string());
+                                log::info!("macOS initial open: Stored path {} for later.", path_str);
+                            }
                         }
                     }
                 }
+                tauri::RunEvent::ExitRequested { .. } => {
+                    std::process::exit(0);
+                }
+                _ => {}
             }
         });
 }

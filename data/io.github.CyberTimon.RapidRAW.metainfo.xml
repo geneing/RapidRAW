@@ -29,7 +29,7 @@
   <launchable type="desktop-id">io.github.CyberTimon.RapidRAW.desktop</launchable>
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/CyberTimon/RapidRAW/6f56816ff765e678586c977752aae2cc999a1b92/.github/assets/editor.png</image>
+      <image>https://raw.githubusercontent.com/CyberTimon/RapidRAW/2f7c0354580bbd403287a924e2a7fce9f2cdfc40/.github/assets/editor.png</image>
         <caption>Editor interface</caption>
     </screenshot>
   </screenshots>
@@ -38,6 +38,78 @@
   <url type="homepage">https://github.com/CyberTimon/RapidRAW</url>
 
   <releases>
+    <release version="v1.4.12" date="2026-02-04">
+        <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.12</url>
+        <description translate="no">
+            <p>New Features</p>
+            <ul>
+                <li>Creative Effects: Introduced Glow, Halation, and Lens Flare adjustments for cinematic atmospheric effects.</li>
+                <li>Global Tooltips: Added a native tooltip system to explain button functions on hover, improving accessibility.</li>
+            </ul>
+            <p>Core Improvements</p>
+            <ul>
+                <li>Fixed a logic error where the Structure effect was incorrectly linked to Sharpness and Clarity sliders.</li>
+                <li>Major UI polish for a smoother user experience.</li>
+            </ul>
+        </description>
+    </release>
+    <release version="v1.4.11" date="2026-01-31">
+        <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.11</url>
+        <description translate="no">
+            <p>New Features</p>
+            <ul>
+                <li>New RAW Preprocessing Algorithm: Whole new preprocessing engine that handles color noise and sharpness significantly better.</li>
+                <li>Fuji X-Trans: Much better handling of Fuji X-Trans sensors for cleaner and sharper details.</li>
+                <li>Flat-Line Clipping in Curves: Added the ability to drag curve start and end points along the X-axis to precisely clip blacks and whites.</li>
+            </ul>
+            <p>Core Improvements</p>
+            <ul>
+                <li>Improved Lens Detection: Enhanced the Lensfun parser for more reliable detection and added support for more manufacturers.</li>
+                <li>Fluid Navigation: Rapidly switching images is now much smoother thanks to new logic that cancels pending load requests for skipped images.</li>
+                <li>Added cross-channel copy/paste functionality for the curves tool.</li>
+                <li>The productivity context menu is now accessible directly within the editor view.</li>
+            </ul>
+        </description>
+    </release>
+    <release version="v1.4.10" date="2026-01-26">
+        <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.10</url>
+        <description translate="no">
+            <p>New Features</p>
+            <ul>
+                <li>Reworked Local Contrast: A completely new shader approach for sharpness, clarity, and structure that eliminates "black hole" artifacts around high-contrast edges.</li>
+                <li>Fine Rotation Grid: The rotation and transform grid now dynamically transitions from the rule of thirds to a high-precision fine grid for better alignment accuracy.</li>
+                <li>Favourite Lenses: Frequently used lenses can now be saved in settings for quick access within the Lens Correction panel.</li>
+                <li>Improved Lens Correction: Enhanced the mathematical accuracy of lens profile applications based on initial testing and feedback.</li>
+            </ul>
+            <p>Core Improvements</p>
+            <ul>
+                <li>Fixed quick eraser functionality.</li>
+                <li>Improved contrast for the sepia UI theme.</li>
+            </ul>
+        </description>
+    </release>
+    <release version="v1.4.9" date="2026-01-25">
+        <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.9</url>
+        <description translate="no">
+            <p>New Features</p>
+            <ul>
+                <li>Lens Correction: Integrated the Lensfun library for dedicated corrections of optical flaws.</li>
+                <li>Geometry Warping Tools: Added a dedicated transform modal to fix perspective and composition with dynamic alignment guides.</li>
+                <li>Refactored Masking System: Rebuilt the masking panel to support sequential masking, drag-and-drop reordering, and individual component opacity.</li>
+                <li>Export Presets: Added a manager to save and reuse export settings like quality and dimensions.</li>
+                <li>AI Infrastructure: Migrated to a dedicated middleware client (RapidRAW-AI-Connector) for more robust and flexible generative AI integration.</li>
+                <li>Improved Large Library Performance: The filmstrip now uses virtualized rendering, significantly speeding up navigation in folders with thousands of images.</li>
+                <li>Centralized EXIF: Refactored metadata handling for better consistency and added support for formats like .RAF, .CR3 and more.</li>
+            </ul>
+            <p>Core Improvements</p>
+            <ul>
+                <li>Implemented library preloading to reduce image loading times.</li>
+                <li>Improved UI contrast and standardized slider styles across the application.</li>
+                <li>Updated the Rawler library for improved camera support.</li>
+                <li>General stability improvements and "under the hood" code cleanup.</li>
+            </ul>
+        </description>
+    </release>
     <release version="v1.4.8" date="2026-01-11">
         <url type="details">https://github.com/CyberTimon/RapidRAW/releases/tag/v1.4.8</url>
         <description translate="no">
