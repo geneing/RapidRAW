@@ -25,6 +25,7 @@ export enum PasteMode {
 export interface CopyPasteSettings {
   mode: PasteMode;
   includedAdjustments: Array<string>;
+  knownAdjustments: Array<string>;
 }
 
 export enum BasicAdjustment {
@@ -84,6 +85,12 @@ export enum Effect {
   VignetteRoundness = 'vignetteRoundness',
 }
 
+export enum CreativeAdjustment {
+  GlowAmount = 'glowAmount',
+  HalationAmount = 'halationAmount',
+  FlareAmount = 'flareAmount',
+}
+
 export enum TransformAdjustment {
   TransformDistortion = 'transformDistortion',
   TransformVertical = 'transformVertical',
@@ -93,6 +100,18 @@ export enum TransformAdjustment {
   TransformScale = 'transformScale',
   TransformXOffset = 'transformXOffset',
   TransformYOffset = 'transformYOffset',
+}
+
+export enum LensAdjustment {
+  LensMaker = 'lensMaker',
+  LensModel = 'lensModel',
+  LensDistortionAmount = 'lensDistortionAmount',
+  LensVignetteAmount = 'lensVignetteAmount',
+  LensTcaAmount = 'lensTcaAmount',
+  LensDistortionParams = 'lensDistortionParams',
+  LensDistortionEnabled = 'lensDistortionEnabled',
+  LensTcaEnabled = 'lensTcaEnabled',
+  LensVignetteEnabled = 'lensVignetteEnabled',
 }
 
 export interface ColorCalibration {
@@ -127,11 +146,33 @@ export interface Adjustments {
   filmBaseColor: string;
   flipHorizontal: boolean;
   flipVertical: boolean;
+  flareAmount: number;
+  glowAmount: number;
   grainAmount: number;
   grainRoughness: number;
   grainSize: number;
+  halationAmount: number;
   highlights: number;
   hsl: Hsl;
+  lensDistortionAmount: number;
+  lensVignetteAmount: number;
+  lensTcaAmount: number;
+  lensDistortionEnabled: boolean;
+  lensTcaEnabled: boolean;
+  lensVignetteEnabled: boolean;
+  lensDistortionParams: {
+    k1: number;
+    k2: number;
+    k3: number;
+    model: number;
+    tca_vr: number;
+    tca_vb: number;
+    vig_k1: number;
+    vig_k2: number;
+    vig_k3: number;
+  } | null;
+  lensMaker: string | null;
+  lensModel: string | null;
   lumaNoiseReduction: number;
   lutData?: string | null;
   lutIntensity?: number;
@@ -237,6 +278,9 @@ export interface MaskAdjustments {
   curves: Curves;
   dehaze: number;
   exposure: number;
+  flareAmount: number;
+  glowAmount: number;
+  halationAmount: number;
   highlights: number;
   hsl: Hsl;
   id?: string;
@@ -333,6 +377,9 @@ export const INITIAL_MASK_ADJUSTMENTS: MaskAdjustments = {
   },
   dehaze: 0,
   exposure: 0,
+  flareAmount: 0,
+  glowAmount: 0,
+  halationAmount: 0,
   highlights: 0,
   hsl: {
     aquas: { hue: 0, saturation: 0, luminance: 0 },
@@ -409,9 +456,12 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
   filmBaseColor: '#ff8800',
   flipHorizontal: false,
   flipVertical: false,
+  flareAmount: 0,
+  glowAmount: 0,
   grainAmount: 0,
   grainRoughness: 50,
   grainSize: 25,
+  halationAmount: 0,
   highlights: 0,
   hsl: {
     aquas: { hue: 0, saturation: 0, luminance: 0 },
@@ -423,6 +473,15 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
     reds: { hue: 0, saturation: 0, luminance: 0 },
     yellows: { hue: 0, saturation: 0, luminance: 0 },
   },
+  lensDistortionAmount: 100,
+  lensVignetteAmount: 100,
+  lensTcaAmount: 100,
+  lensDistortionEnabled: true,
+  lensTcaEnabled: true,
+  lensVignetteEnabled: true,
+  lensDistortionParams: null,
+  lensMaker: null,
+  lensModel: null,
   lumaNoiseReduction: 0,
   lutData: null,
   lutIntensity: 100,
@@ -493,6 +552,9 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
       adjustments: {
         ...INITIAL_MASK_ADJUSTMENTS,
         ...containerAdjustments,
+        flareAmount: containerAdjustments.flareAmount ?? INITIAL_MASK_ADJUSTMENTS.flareAmount,
+        glowAmount: containerAdjustments.glowAmount ?? INITIAL_MASK_ADJUSTMENTS.glowAmount,
+        halationAmount: containerAdjustments.halationAmount ?? INITIAL_MASK_ADJUSTMENTS.halationAmount,
         colorGrading: { ...INITIAL_MASK_ADJUSTMENTS.colorGrading, ...(containerAdjustments.colorGrading || {}) },
         hsl: { ...INITIAL_MASK_ADJUSTMENTS.hsl, ...(containerAdjustments.hsl || {}) },
         curves: { ...INITIAL_MASK_ADJUSTMENTS.curves, ...(containerAdjustments.curves || {}) },
@@ -514,6 +576,19 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
   return {
     ...INITIAL_ADJUSTMENTS,
     ...loadedAdjustments,
+    flareAmount: loadedAdjustments.flareAmount ?? INITIAL_ADJUSTMENTS.flareAmount,
+    glowAmount: loadedAdjustments.glowAmount ?? INITIAL_ADJUSTMENTS.glowAmount,
+    halationAmount: loadedAdjustments.halationAmount ?? INITIAL_ADJUSTMENTS.halationAmount,
+    lensMaker: loadedAdjustments.lensMaker ?? INITIAL_ADJUSTMENTS.lensMaker,
+    lensModel: loadedAdjustments.lensModel ?? INITIAL_ADJUSTMENTS.lensModel,
+    lensDistortionAmount: loadedAdjustments.lensDistortionAmount ?? INITIAL_ADJUSTMENTS.lensDistortionAmount,
+    lensVignetteAmount: loadedAdjustments.lensVignetteAmount ?? INITIAL_ADJUSTMENTS.lensVignetteAmount,
+    lensTcaAmount: loadedAdjustments.lensTcaAmount ?? INITIAL_ADJUSTMENTS.lensTcaAmount,
+    lensDistortionEnabled: loadedAdjustments.lensDistortionEnabled ?? INITIAL_ADJUSTMENTS.lensDistortionEnabled,
+    lensTcaEnabled: loadedAdjustments.lensTcaEnabled ?? INITIAL_ADJUSTMENTS.lensTcaEnabled,
+    lensVignetteEnabled: loadedAdjustments.lensVignetteEnabled ?? INITIAL_ADJUSTMENTS.lensVignetteEnabled,
+    lensDistortionParams:
+      loadedAdjustments.lensDistortionParams ?? INITIAL_ADJUSTMENTS.lensDistortionParams,
     transformDistortion: loadedAdjustments.transformDistortion ?? INITIAL_ADJUSTMENTS.transformDistortion,
     transformVertical: loadedAdjustments.transformVertical ?? INITIAL_ADJUSTMENTS.transformVertical,
     transformHorizontal: loadedAdjustments.transformHorizontal ?? INITIAL_ADJUSTMENTS.transformHorizontal,
@@ -551,9 +626,12 @@ export const COPYABLE_ADJUSTMENT_KEYS: Array<string> = [
   Effect.EnableNegativeConversion,
   BasicAdjustment.Exposure,
   Effect.FilmBaseColor,
+  CreativeAdjustment.FlareAmount,
+  CreativeAdjustment.GlowAmount,
   Effect.GrainAmount,
   Effect.GrainRoughness,
   Effect.GrainSize,
+  CreativeAdjustment.HalationAmount,
   BasicAdjustment.Highlights,
   ColorAdjustment.Hsl,
   'lutIntensity',
@@ -616,6 +694,9 @@ export const ADJUSTMENT_SECTIONS: Sections = {
   effects: [
     Effect.EnableNegativeConversion,
     Effect.FilmBaseColor,
+    CreativeAdjustment.GlowAmount,
+    CreativeAdjustment.HalationAmount,
+    CreativeAdjustment.FlareAmount,
     Effect.GrainAmount,
     Effect.GrainRoughness,
     Effect.GrainSize,

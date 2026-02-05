@@ -847,7 +847,7 @@ export default function PresetsPanel({
               className="p-2 rounded-full hover:bg-surface transition-colors"
               disabled={isLoading}
               onClick={() => setIsAddModalOpen(true)}
-              title="Save current settings as new preset"
+              title="Save as new preset"
             >
               <Plus size={18} />
             </button>

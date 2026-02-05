@@ -12,8 +12,8 @@ interface BasicAdjustmentsProps {
 }
 
 const toneMapperOptions = [
-  { id: 'basic', label: 'Basic' },
-  { id: 'agx', label: 'AgX' },
+  { id: 'basic', label: 'Basic', title: 'Standard Tonemapping' },
+  { id: 'agx', label: 'AgX', title: 'Film-like Tonemapping' },
 ];
 
 interface ToneMapperSwitchProps {
@@ -79,7 +79,6 @@ const ToneMapperSwitch = ({
           onDoubleClick={handleReset}
           onMouseEnter={() => setIsLabelHovered(true)}
           onMouseLeave={() => setIsLabelHovered(false)}
-          title="Click or double-click to reset to Basic"
         >
           <span
             aria-hidden={isLabelHovered}
@@ -110,6 +109,7 @@ const ToneMapperSwitch = ({
           {toneMapperOptions.map((mapper) => (
             <button
               key={mapper.id}
+              title={mapper.title}
               ref={(el) => {
                 if (el) {
                   const newRefs = new Map(buttonRefs);

@@ -311,7 +311,7 @@ export default function BottomBar({
               className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               disabled={isExportDisabled}
               onClick={onExportClick}
-              title="Export Selected Images"
+              title="Export"
             >
               <Save size={18} />
             </button>

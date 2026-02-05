@@ -130,6 +130,12 @@ pub struct LastFolderState {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct MyLens {
+    pub maker: String,
+    pub model: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum PasteMode {
     Merge,
@@ -146,6 +152,7 @@ fn default_included_adjustments() -> HashSet<String> {
         "negativeGreenBalance", "negativeRedBalance", "saturation", "sectionVisibility",
         "shadows", "sharpness", "showClipping", "structure", "temperature", "tint",
         "toneMapper", "vibrance", "vignetteAmount", "vignetteFeather", "vignetteMidpoint",
+        "flareAmount", "glowAmount", "halationAmount",
         "vignetteRoundness", "whites",
     ]
     .iter()
@@ -159,6 +166,8 @@ pub struct CopyPasteSettings {
     pub mode: PasteMode,
     #[serde(default = "default_included_adjustments")]
     pub included_adjustments: HashSet<String>,
+    #[serde(default)] 
+    pub known_adjustments: HashSet<String>,
 }
 
 impl Default for CopyPasteSettings {
@@ -166,6 +175,7 @@ impl Default for CopyPasteSettings {
         Self {
             mode: PasteMode::Merge,
             included_adjustments: default_included_adjustments(),
+            known_adjustments: default_included_adjustments(), 
         }
     }
 }
@@ -295,6 +305,8 @@ pub struct AppSettings {
     pub library_view_mode: Option<String>,
     #[serde(default = "default_export_presets")]
     pub export_presets: Vec<ExportPreset>,
+    #[serde(default)]
+    pub my_lenses: Option<Vec<MyLens>>,
 }
 
 fn default_adjustment_visibility() -> HashMap<String, bool> {
@@ -349,6 +361,7 @@ impl Default for AppSettings {
             linux_gpu_optimization: Some(false),
             library_view_mode: Some("flat".to_string()),
             export_presets: default_export_presets(),
+            my_lenses: Some(Vec::new()),
         }
     }
 }
@@ -771,6 +784,7 @@ pub fn generate_thumbnail_data(
                             &adjustments,
                             true,
                             highlight_compression,
+                            None,
                         )?,
                         Err(_) => {
                             let file_bytes = fs::read(&source_path).map_err(|io_err| {
@@ -782,6 +796,7 @@ pub fn generate_thumbnail_data(
                                 &adjustments,
                                 true,
                                 highlight_compression,
+                                None,
                             )?
                         }
                     }
@@ -913,6 +928,7 @@ pub fn generate_thumbnail_data(
                 &adjustments,
                 true,
                 highlight_compression,
+                None,
             )?,
             Err(e) => {
                 log::warn!("Fallback read for {}: {}", source_path_str, e);
@@ -923,6 +939,7 @@ pub fn generate_thumbnail_data(
                     &adjustments,
                     true,
                     highlight_compression,
+                    None,
                 )?
             }
         }
@@ -1612,6 +1629,7 @@ pub fn apply_auto_adjustments_to_paths(
                 &source_path_str,
                 false,
                 highlight_compression,
+                None,
             )
             .map_err(|e| e.to_string())?;
 
@@ -1805,11 +1823,43 @@ fn get_settings_path(app_handle: &AppHandle) -> Result<std::path::PathBuf, Strin
 #[tauri::command]
 pub fn load_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
     let path = get_settings_path(&app_handle)?;
-    if !path.exists() {
-        return Ok(AppSettings::default());
+
+    let mut settings: AppSettings = if path.exists() {
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())?
+    } else {
+        AppSettings::default()
+    };
+
+    let all_current_keys = default_included_adjustments();
+    let mut settings_modified = false;
+
+    let is_first_migration = settings.copy_paste_settings.known_adjustments.is_empty();
+
+    if is_first_migration {
+        settings.copy_paste_settings.included_adjustments = all_current_keys.clone();
+        settings.copy_paste_settings.known_adjustments = all_current_keys;
+        settings_modified = true;
+    } else {
+        let new_features: Vec<String> = all_current_keys
+            .difference(&settings.copy_paste_settings.known_adjustments)
+            .cloned()
+            .collect();
+
+        if !new_features.is_empty() {
+            settings.copy_paste_settings.included_adjustments.extend(new_features);
+            settings.copy_paste_settings.known_adjustments = all_current_keys;
+            settings_modified = true;
+        }
     }
-    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| e.to_string())
+
+    if settings_modified {
+        if let Ok(json_string) = serde_json::to_string_pretty(&settings) {
+            let _ = fs::write(&path, json_string);
+        }
+    }
+
+    Ok(settings)
 }
 
 #[tauri::command]

@@ -194,7 +194,9 @@ export default function MasksPanel({
   }, [adjustments.masks, activeMaskContainerId, onSelectContainer, onSelectMask]);
 
   useEffect(() => {
-    setIsMaskListEmpty(adjustments.masks.length === 0);
+    if (adjustments.masks.length > 0) {
+      setIsMaskListEmpty(false);
+    }
 
     if (!hasPerformedInitialSelection.current && !activeMaskContainerId && adjustments.masks.length > 0) {
       const lastMask = adjustments.masks[adjustments.masks.length - 1];
@@ -507,7 +509,7 @@ export default function MasksPanel({
         
         <div className="p-4 flex justify-between items-center flex-shrink-0 border-b border-surface h-[69px]">
             <h2 className="text-xl font-bold text-primary text-shadow-shiny">Masking</h2>
-            <button className="p-2 rounded-full hover:bg-surface transition-colors" disabled={adjustments.masks.length === 0} onClick={handleResetAllMasks} title="Reset All Masks">
+            <button className="p-2 rounded-full hover:bg-surface transition-colors" onClick={handleResetAllMasks} title="Reset Masking">
                <RotateCcw size={18} />
             </button>
         </div>
@@ -524,6 +526,7 @@ export default function MasksPanel({
                         maskType={maskType} 
                         onClick={(e:any) => maskType.id === 'others' ? handleAddOthersMask(e) : handleGridClick(maskType.type)}
                         isDraggable={maskType.id !== 'others'}
+                        activeMaskContainerId={activeMaskContainerId}
                     />
                     ))}
                 </div>
@@ -541,8 +544,6 @@ export default function MasksPanel({
                     >
                         <p className="text-sm my-3 font-semibold text-text-primary">Masks</p>
                         
-                        {isMaskListEmpty && <div className="text-center text-text-secondary text-sm py-4 opacity-70">No masks created.</div>}
-                        
                         <AnimatePresence 
                           initial={false} 
                           mode='popLayout'
@@ -552,33 +553,45 @@ export default function MasksPanel({
                               }
                           }}
                         >
-                            {adjustments.masks.map((container) => (
-                              <ContainerRow 
-                                  key={container.id} 
-                                  container={container} 
-                                  isSelected={activeMaskContainerId === container.id && activeMaskId === null}
-                                  hasActiveChild={activeMaskContainerId === container.id && activeMaskId !== null}
-                                  isExpanded={expandedContainers.has(container.id)}
-                                  onToggle={() => handleToggleExpand(container.id)} 
-                                  onSelect={() => { onSelectContainer(container.id); onSelectMask(null); }}
-                                  renamingId={renamingId} setRenamingId={setRenamingId} 
-                                  tempName={tempName} setTempName={setTempName}
-                                  updateContainer={updateContainer} 
-                                  handleDelete={handleDeleteContainer} 
-                                  handleDuplicate={handleDuplicateContainer} 
-                                  setCopiedMask={setCopiedMask} 
-                                  copiedMask={copiedMask} 
-                                  presets={presets}
-                                  setAdjustments={setAdjustments}
-                                  activeDragItem={activeDragItem}
-                                  activeMaskId={activeMaskId}
-                                  onSelectContainer={onSelectContainer}
-                                  onSelectMask={onSelectMask}
-                                  updateSubMask={updateSubMask}
-                                  handleDeleteSubMask={handleDeleteSubMask}
-                                  analyzingSubMaskId={analyzingSubMaskId}
-                              />
-                            ))}
+                            {isMaskListEmpty ? (
+                                <motion.div
+                                    key="empty-masks-placeholder"
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    exit={{ opacity: 0 }}
+                                    className="text-center text-text-secondary text-sm py-4 opacity-70"
+                                >
+                                    No masks created.
+                                </motion.div>
+                            ) : (
+                                adjustments.masks.map((container) => (
+                                    <ContainerRow 
+                                        key={container.id} 
+                                        container={container} 
+                                        isSelected={activeMaskContainerId === container.id && activeMaskId === null}
+                                        hasActiveChild={activeMaskContainerId === container.id && activeMaskId !== null}
+                                        isExpanded={expandedContainers.has(container.id)}
+                                        onToggle={() => handleToggleExpand(container.id)} 
+                                        onSelect={() => { onSelectContainer(container.id); onSelectMask(null); }}
+                                        renamingId={renamingId} setRenamingId={setRenamingId} 
+                                        tempName={tempName} setTempName={setTempName}
+                                        updateContainer={updateContainer} 
+                                        handleDelete={handleDeleteContainer} 
+                                        handleDuplicate={handleDuplicateContainer} 
+                                        setCopiedMask={setCopiedMask} 
+                                        copiedMask={copiedMask} 
+                                        presets={presets}
+                                        setAdjustments={setAdjustments}
+                                        activeDragItem={activeDragItem}
+                                        activeMaskId={activeMaskId}
+                                        onSelectContainer={onSelectContainer}
+                                        onSelectMask={onSelectMask}
+                                        updateSubMask={updateSubMask}
+                                        handleDeleteSubMask={handleDeleteSubMask}
+                                        analyzingSubMaskId={analyzingSubMaskId}
+                                    />
+                                ))
+                            )}
                         </AnimatePresence>
 
                         <AnimatePresence
@@ -695,7 +708,7 @@ function NewMaskDropZone({ isOver }: { isOver: boolean }) {
   );
 }
 
-function DraggableGridItem({ maskType, onClick, isDraggable }: any) {
+function DraggableGridItem({ maskType, onClick, isDraggable, activeMaskContainerId }: any) {
     const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ 
         id: `create-${maskType.id || maskType.type}`, 
         data: { type: 'Creation', maskType: maskType.type },
@@ -706,7 +719,7 @@ function DraggableGridItem({ maskType, onClick, isDraggable }: any) {
             ref={setNodeRef} {...listeners} {...attributes} disabled={maskType.disabled} onClick={onClick}
             className={`bg-surface text-text-primary rounded-lg p-2 flex flex-col items-center justify-center gap-1.5 aspect-square transition-colors 
                 ${maskType.disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-card-active active:bg-accent/20'} ${isDragging ? 'opacity-50' : ''}`}
-            title={maskType.disabled ? 'Coming Soon' : `Add ${maskType.name}`}
+            title={maskType.disabled ? 'Coming Soon' : activeMaskContainerId ? `Add ${maskType.name} to Current Mask` : `Create New ${maskType.name} Mask`}
         >
             <maskType.icon size={24} /> <span className="text-xs">{maskType.name}</span>
         </button>
@@ -962,9 +975,9 @@ function SubMaskRow({ subMask, index, totalCount, containerId, isActive, parentV
           </div>
           <span className="text-sm text-text-primary flex-1 truncate select-none">{formatMaskTypeName(subMask.type)}</span>
           <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-             <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" title={subMask.mode === SubMaskMode.Additive ? "Add" : "Subtract"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { mode: subMask.mode === SubMaskMode.Additive ? SubMaskMode.Subtractive : SubMaskMode.Additive }); }}>{subMask.mode === SubMaskMode.Additive ? <Plus size={14}/> : <Minus size={14}/>}</button>
-             <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { visible: !subMask.visible }); }}>{subMask.visible ? <Eye size={14}/> : <EyeOff size={14}/>}</button>
-             <button className="p-1 hover:text-red-500 text-text-secondary" onClick={(e) => { e.stopPropagation(); handleDelete(); }}><Trash2 size={14}/></button>
+            <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" title={subMask.mode === SubMaskMode.Additive ? "Switch to Subtract" : "Switch to Add"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { mode: subMask.mode === SubMaskMode.Additive ? SubMaskMode.Subtractive : SubMaskMode.Additive }); }}>{subMask.mode === SubMaskMode.Additive ? <Plus size={14}/> : <Minus size={14}/>}</button>
+            <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" title={subMask.visible ? "Hide Component" : "Show Component"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { visible: !subMask.visible }); }}>{subMask.visible ? <Eye size={14}/> : <EyeOff size={14}/>}</button>
+            <button className="p-1 hover:text-red-500 text-text-secondary" title="Delete Component" onClick={(e) => { e.stopPropagation(); handleDelete(); }}><Trash2 size={14}/></button>
           </div>
       </motion.div>
    );
@@ -1169,7 +1182,14 @@ function SettingsPanel({ container, activeSubMask, aiModelDownloadStatus, brushS
 
                  {isComponentMode && (
                     <>
-                        {isAiMask && aiModelDownloadStatus && <div className="text-xs text-accent text-center bg-accent/10 p-1 rounded">Downloading Model: {aiModelDownloadStatus}</div>}
+                        {isAiMask && aiModelDownloadStatus && (
+                          <div className="p-3 mb-4 bg-card-active rounded-md border border-surface flex items-center gap-3">
+                            <Loader2 size={16} className="text-accent animate-spin flex-shrink-0" />
+                            <div className="text-xs text-text-secondary leading-relaxed">
+                              AI Model Downloading: <span className="text-accent font-medium">{aiModelDownloadStatus}</span>
+                            </div>
+                          </div>
+                        )}
                         {subMaskConfig.parameters?.map((param: any) => (
                            <Slider key={param.key} label={param.label} min={param.min} max={param.max} step={param.step} defaultValue={param.defaultValue}
                               value={(activeSubMask.parameters[param.key] || 0) * (param.multiplier || 1)}

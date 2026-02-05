@@ -1,4 +1,4 @@
-import { SlidersHorizontal, Info, Scaling, BrainCircuit, Bookmark, Save, Layers } from 'lucide-react';
+import { SlidersHorizontal, Info, Scaling, BrushCleaning, Bookmark, Save, Layers } from 'lucide-react';
 import { Panel } from '../../ui/AppProperties';
 
 interface PanelOptions {
@@ -13,12 +13,12 @@ interface RightPanelSwitcherProps {
 }
 
 const panelOptions: Array<PanelOptions> = [
-  { id: Panel.Metadata, icon: Info, title: 'Metadata' },
-  { id: Panel.Adjustments, icon: SlidersHorizontal, title: 'Adjustments' },
+  { id: Panel.Metadata, icon: Info, title: 'Info' },
+  { id: Panel.Adjustments, icon: SlidersHorizontal, title: 'Adjust' },
   { id: Panel.Crop, icon: Scaling, title: 'Crop' },
   { id: Panel.Masks, icon: Layers, title: 'Masks' },
   { id: Panel.Presets, icon: Bookmark, title: 'Presets' },
-  { id: Panel.Ai, icon: BrainCircuit, title: 'AI Tools' },
+  { id: Panel.Ai, icon: BrushCleaning, title: 'Inpaint' },
   { id: Panel.Export, icon: Save, title: 'Export' },
 ];
 

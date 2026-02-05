@@ -231,11 +231,6 @@ const Slider = ({
           onDoubleClick={typeof label === 'string' ? handleReset : undefined}
           onMouseEnter={typeof label === 'string' ? () => setIsLabelHovered(true) : undefined}
           onMouseLeave={typeof label === 'string' ? () => setIsLabelHovered(false) : undefined}
-          title={
-            typeof label === 'string' && label
-              ? `Click or double-click to reset ${label.toLowerCase()} to ${defaultValue}`
-              : ''
-          }
         >
           <span
             aria-hidden={isLabelHovered && typeof label === 'string'}
@@ -276,7 +271,7 @@ const Slider = ({
               className="text-sm text-text-primary w-full text-right select-none cursor-text"
               onClick={handleValueClick}
               onDoubleClick={handleReset}
-              title={`Click to edit, double-click to reset to ${defaultValue}`}
+              title={`Click to edit`}
             >
               {decimalPlaces > 0 && numericValue === 0 ? '0' : numericValue.toFixed(decimalPlaces)}
             </span>

@@ -322,7 +322,7 @@ export default function FolderTree({
       <button
         className="absolute top-1/2 -translate-y-1/2 right-1 w-6 h-10 hover:bg-card-active rounded-md flex items-center justify-center z-30"
         onClick={() => setIsVisible(!isVisible)}
-        title={isVisible ? 'Collapse Panel' : 'Expand Panel'}
+        title={isVisible ? 'Collapse Folder Tree' : 'Expand Folder Tree'}
       >
         {isVisible ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
       </button>
