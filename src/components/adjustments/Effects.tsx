@@ -101,62 +101,6 @@ export default function EffectsPanel({
             />
           </div>
 
-          {adjustmentVisibility.negativeConversion !== false && (
-            <div className="mb-4 p-2 bg-bg-tertiary rounded-md">
-              <p className="text-md font-semibold mb-2 text-primary">Negative Conversion</p>
-              <div className="mb-2">
-                <Switch
-                  label="Enable"
-                  checked={!!adjustments.enableNegativeConversion}
-                  onChange={(checked: boolean) => handleCheckedChange(Effect.EnableNegativeConversion, checked)}
-                />
-              </div>
-              {adjustments.enableNegativeConversion && (
-                <div className="space-y-2 mt-2 pt-2 border-t border-bg-secondary">
-                  <div className="flex items-center justify-between">
-                    <label htmlFor="filmBaseColor" className="text-sm font-medium text-text-primary">
-                      Film Base Color
-                    </label>
-                    <input
-                      className="p-0 h-8 w-12 border-none rounded-md cursor-pointer bg-bg-secondary"
-                      id="filmBaseColor"
-                      onChange={(e: any) => handleColorChange(Effect.FilmBaseColor, e.target.value)}
-                      type="color"
-                      value={adjustments.filmBaseColor || '#ff8800'}
-                    />
-                  </div>
-                  <Slider
-                    label="Red Balance"
-                    max={100}
-                    min={-100}
-                    onChange={(e: any) => handleAdjustmentChange(Effect.NegativeRedBalance, e.target.value)}
-                    step={1}
-                    value={adjustments.negativeRedBalance || 0}
-                    onDragStateChange={onDragStateChange}
-                  />
-                  <Slider
-                    label="Green Balance"
-                    max={100}
-                    min={-100}
-                    onChange={(e: any) => handleAdjustmentChange(Effect.NegativeGreenBalance, e.target.value)}
-                    step={1}
-                    value={adjustments.negativeGreenBalance || 0}
-                    onDragStateChange={onDragStateChange}
-                  />
-                  <Slider
-                    label="Blue Balance"
-                    max={100}
-                    min={-100}
-                    onChange={(e: any) => handleAdjustmentChange(Effect.NegativeBlueBalance, e.target.value)}
-                    step={1}
-                    value={adjustments.negativeBlueBalance || 0}
-                    onDragStateChange={onDragStateChange}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
           {adjustmentVisibility.vignette !== false && (
             <div className="mb-4 p-2 bg-bg-tertiary rounded-md">
               <p className="text-md font-semibold mb-2 text-primary">Vignette</p>

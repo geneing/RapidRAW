@@ -87,7 +87,6 @@ const adjustmentVisibilityDefaults = {
   presence: true,
   noiseReduction: true,
   chromaticAberration: false,
-  negativeConversion: false,
   vignette: true,
   colorCalibration: false,
   grain: true,
@@ -709,19 +708,6 @@ export default function SettingsPanel({
                           adjustmentVisibility: {
                             ...(appSettings?.adjustmentVisibility || adjustmentVisibilityDefaults),
                             colorCalibration: checked,
-                          },
-                        })
-                      }
-                    />
-                    <Switch
-                      label="Negative Conversion"
-                      checked={appSettings?.adjustmentVisibility?.negativeConversion ?? false}
-                      onChange={(checked) =>
-                        onSettingsChange({
-                          ...appSettings,
-                          adjustmentVisibility: {
-                            ...(appSettings?.adjustmentVisibility || adjustmentVisibilityDefaults),
-                            negativeConversion: checked,
                           },
                         })
                       }

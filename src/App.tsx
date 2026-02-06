@@ -36,6 +36,7 @@ import {
   Users,
   Gauge,
   Grip,
+  SquaresExclude,
 } from 'lucide-react';
 import TitleBar from './window/TitleBar';
 import CommunityPage from './components/panel/CommunityPage';
@@ -62,6 +63,7 @@ import ConfirmModal from './components/modals/ConfirmModal';
 import ImportSettingsModal from './components/modals/ImportSettingsModal';
 import RenameFileModal from './components/modals/RenameFileModal';
 import PanoramaModal from './components/modals/PanoramaModal';
+import NegativeConversionModal from './components/modals/NegativeConversionModal';
 import DenoiseModal from './components/modals/DenoiseModal';
 import CollageModal from './components/modals/CollageModal';
 import CopyPasteSettingsModal from './components/modals/CopyPasteSettingsModal';
@@ -173,6 +175,11 @@ interface DenoiseModalState {
   error: string | null;
   targetPath: string | null;
   progressMessage: string | null;
+}
+
+interface NegativeConversionModalState {
+  isOpen: boolean;
+  targetPath: string | null;
 }
 
 interface CullingModalState {
@@ -418,6 +425,10 @@ function App() {
     isOpen: false,
     progressMessage: '',
     stitchingSourcePaths: [],
+  });
+  const [negativeModalState, setNegativeModalState] = useState<NegativeConversionModalState>({
+    isOpen: false,
+    targetPath: null,
   });
   const [denoiseModalState, setDenoiseModalState] = useState<DenoiseModalState>({
     isOpen: false,
@@ -2520,7 +2531,9 @@ function App() {
     confirmModalState.isOpen ||
     panoramaModalState.isOpen ||
     cullingModalState.isOpen ||
-    collageModalState.isOpen;
+    collageModalState.isOpen ||
+    denoiseModalState.isOpen ||
+    negativeModalState.isOpen;
 
   useKeyboardShortcuts({
     isModalOpen: isAnyModalOpen,
@@ -3517,6 +3530,18 @@ function App() {
             },
           },
           {
+            label: 'Convert Negative',
+            icon: SquaresExclude,
+            onClick: () => {
+              if (selectedImage) {
+                setNegativeModalState({
+                  isOpen: true,
+                  targetPath: selectedImage.path
+                });
+              }
+            }
+          },
+          {
             disabled: true,
             icon: Images,
             label: 'Stitch Panorama',
@@ -3578,31 +3603,22 @@ function App() {
       {
         label: 'Reset Adjustments',
         icon: RotateCcw,
-        isDestructive: true,
-        submenu: [
-          { label: 'Cancel', icon: X, onClick: () => {} },
-          {
-            label: 'Confirm',
-            icon: Check,
-            isDestructive: true,
-            onClick: () => {
-              debouncedSetHistory.cancel();
-              const currentRating = adjustments.rating;
+        onClick: () => {
+          debouncedSetHistory.cancel();
+          const currentRating = adjustments.rating;
 
-              const originalAspectRatio =
-                selectedImage.width && selectedImage.height
-                  ? selectedImage.width / selectedImage.height
-                  : null;
+          const originalAspectRatio =
+            selectedImage.width && selectedImage.height
+              ? selectedImage.width / selectedImage.height
+              : null;
 
-              resetAdjustmentsHistory({
-                ...INITIAL_ADJUSTMENTS,
-                aspectRatio: originalAspectRatio,
-                rating: currentRating,
-                aiPatches: [],
-              });
-            },
-          },
-        ],
+          resetAdjustmentsHistory({
+            ...INITIAL_ADJUSTMENTS,
+            aspectRatio: originalAspectRatio,
+            rating: currentRating,
+            aiPatches: [],
+          });
+        },
       },
     ];
     showContextMenu(event.clientX, event.clientY, options);
@@ -3838,6 +3854,17 @@ function App() {
                 progressMessage: null,
               });
             },
+          },
+          {
+            label: 'Convert Negative',
+            icon: SquaresExclude,
+            disabled: !isSingleSelection, 
+            onClick: () => {
+              setNegativeModalState({
+                isOpen: true,
+                targetPath: finalSelection[0]
+              });
+            }
           },
           {
             disabled: selectionCount < 2 || selectionCount > 30,
@@ -4663,6 +4690,18 @@ function App() {
         }}
         onSave={handleSavePanorama}
         progressMessage={panoramaModalState.progressMessage}
+      />
+      <NegativeConversionModal 
+        isOpen={negativeModalState.isOpen}
+        onClose={() => setNegativeModalState(prev => ({ ...prev, isOpen: false }))}
+        selectedImagePath={negativeModalState.targetPath}
+        onSave={(savedPath) => {
+            refreshImageList().then(() => {
+              if (selectedImage?.path === negativeModalState.targetPath) {
+                handleImageSelect(savedPath);
+              }
+            });
+        }}
       />
       <DenoiseModal 
         isOpen={denoiseModalState.isOpen}

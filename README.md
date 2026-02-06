@@ -62,6 +62,7 @@ RapidRAW is still in active development and isn't yet as polished as mature tool
 <details>
 <summary><strong>Recent Changes</strong></summary>
 
+*   **2026-02-06:** Refactored negative conversion logic using characteristic curves.
 *   **2026-02-04:** Global tooltips & major UI polish
 *   **2026-02-03:** New creative effects: Glow, Halation & Lens Flares
 *   **2026-01-31:** Accurate color noise reduction for RAW images & improved image loading
@@ -71,11 +72,11 @@ RapidRAW is still in active development and isn't yet as polished as mature tool
 *   **2026-01-25:** Filmstrip performance boost, improved sorting, lens distortion fixes for AI masks & crop
 *   **2026-01-24:** Added automatic lens, TCA & vignette correction using lensfun
 *   **2026-01-22:** Improved and centralized EXIF data handling for greater accuracy and support
-*   **2026-01-21:** Inpainting now works correctly on images with geometry transformations
 
 <details>
 <summary><strong>Expand further</strong></summary>
 
+*   **2026-01-21:** Inpainting now works correctly on images with geometry transformations
 *   **2026-01-20:** Export preset management for saving export settings 
 *   **2026-01-19:** Preload library for faster startup & automatic geometry transformation helper lines
 *   **2026-01-18:** Implement image geometry transformation utils
@@ -263,7 +264,7 @@ RapidRAW is still in active development and isn't yet as polished as mature tool
         <li><strong>Copy & Paste Settings:</strong> Quickly transfer adjustments between images.</li>
         <li><strong>Undo/Redo History:</strong> A robust history system for every edit.</li>
         <li><strong>Customizable UI:</strong> Resizable panels and multiple beautiful UI themes with smooth animations.</li>
-        <li><strong>Compositions:</strong> Built-in seamless Panorama Stitcher and flexible Collage Maker.</li>
+        <li><strong>Compositions:</strong> Built-in seamless Panorama Stitcher, flexible Collage Maker, and Film Negative Converter.</li>
         <li><strong>Exporting:</strong> Control file format, watermarking, naming scheme, metadata, resizing options on export.</li>
       </ul>
     </td>
@@ -426,7 +427,7 @@ You have two options to run RapidRAW:
 - Grab the pre-built installer or application bundle for your operating system from the [**Releases**](https://github.com/CyberTimon/RapidRAW/releases) page.
 
 **Linux:**
-- The official Flatpak package supports all Linux distributions and is available on [Flathub](https://flathub.org/apps/io.github.CyberTimon.RapidRAW).
+- The official Flatpak package supports all Linux distributions and is available on [**Flathub**](https://flathub.org/apps/io.github.CyberTimon.RapidRAW).
 - On Debian-based distributions, install the `.deb` package from the [**Releases**](https://github.com/CyberTimon/RapidRAW/releases) page.
 - On Arch-based distributions, use the [`rapidraw-bin`](https://aur.archlinux.org/packages/rapidraw-bin) package from the AUR.
 
@@ -513,6 +514,7 @@ A huge thank you to the following projects and tools that were very important in
 *   **[Google AI Studio](https://aistudio.google.com):** For providing amazing assistance in researching, implementing image processing algorithms and giving an overall speed boost.
 *   **[rawler](https://github.com/dnglab/dnglab/tree/main/rawler):** For the excellent Rust crate that provides the foundation for RAW file processing in this project.
 *   **[lensfun](https://lensfun.github.io/):** For its invaluable open-source library and comprehensive database for automatic lens correction.
+*   **[NegPy](https://github.com/marcinz606/NegPy):** For the inspiration behind the negative conversion logic, particularly the mathematical approach to film inversion using characteristic curves.
 *   **[pixls.us](https://discuss.pixls.us/):** For being an incredible community full of knowledgeable people who offered inspiration, advice, and ideas.
 *   **[darktable & co.](https://github.com/darktable-org/darktable):** For some reference implementations that guided parts of this work.
 *   **You:** For using and supporting RapidRAW. Your interest keeps this project alive and evolving.

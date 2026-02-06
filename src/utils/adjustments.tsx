@@ -70,15 +70,10 @@ export enum DetailsAdjustment {
 }
 
 export enum Effect {
-  EnableNegativeConversion = 'enableNegativeConversion',
-  FilmBaseColor = 'filmBaseColor',
   GrainAmount = 'grainAmount',
   GrainRoughness = 'grainRoughness',
   GrainSize = 'grainSize',
   LutIntensity = 'lutIntensity',
-  NegativeBlueBalance = 'negativeBlueBalance',
-  NegativeGreenBalance = 'negativeGreenBalance',
-  NegativeRedBalance = 'negativeRedBalance',
   VignetteAmount = 'vignetteAmount',
   VignetteFeather = 'vignetteFeather',
   VignetteMidpoint = 'vignetteMidpoint',
@@ -141,9 +136,7 @@ export interface Adjustments {
   curves: Curves;
   crop: Crop | null;
   dehaze: number;
-  enableNegativeConversion: boolean;
   exposure: number;
-  filmBaseColor: string;
   flipHorizontal: boolean;
   flipVertical: boolean;
   flareAmount: number;
@@ -180,9 +173,6 @@ export interface Adjustments {
   lutPath?: string | null;
   lutSize?: number;
   masks: Array<MaskContainer>;
-  negativeBlueBalance: number;
-  negativeGreenBalance: number;
-  negativeRedBalance: number;
   orientationSteps: number;
   rating: number;
   rotation: number;
@@ -451,9 +441,7 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
     ],
   },
   dehaze: 0,
-  enableNegativeConversion: false,
   exposure: 0,
-  filmBaseColor: '#ff8800',
   flipHorizontal: false,
   flipVertical: false,
   flareAmount: 0,
@@ -489,9 +477,6 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
   lutPath: null,
   lutSize: 0,
   masks: [],
-  negativeBlueBalance: 0,
-  negativeGreenBalance: 0,
-  negativeRedBalance: 0,
   orientationSteps: 0,
   rating: 0,
   rotation: 0,
@@ -623,9 +608,7 @@ export const COPYABLE_ADJUSTMENT_KEYS: Array<string> = [
   BasicAdjustment.Contrast,
   'curves',
   DetailsAdjustment.Dehaze,
-  Effect.EnableNegativeConversion,
   BasicAdjustment.Exposure,
-  Effect.FilmBaseColor,
   CreativeAdjustment.FlareAmount,
   CreativeAdjustment.GlowAmount,
   Effect.GrainAmount,
@@ -639,9 +622,6 @@ export const COPYABLE_ADJUSTMENT_KEYS: Array<string> = [
   'lutPath',
   'lutSize',
   DetailsAdjustment.LumaNoiseReduction,
-  Effect.NegativeBlueBalance,
-  Effect.NegativeGreenBalance,
-  Effect.NegativeRedBalance,
   ColorAdjustment.Saturation,
   'sectionVisibility',
   BasicAdjustment.Shadows,
@@ -692,8 +672,6 @@ export const ADJUSTMENT_SECTIONS: Sections = {
     DetailsAdjustment.ChromaticAberrationBlueYellow,
   ],
   effects: [
-    Effect.EnableNegativeConversion,
-    Effect.FilmBaseColor,
     CreativeAdjustment.GlowAmount,
     CreativeAdjustment.HalationAmount,
     CreativeAdjustment.FlareAmount,
@@ -701,9 +679,6 @@ export const ADJUSTMENT_SECTIONS: Sections = {
     Effect.GrainRoughness,
     Effect.GrainSize,
     Effect.LutIntensity,
-    Effect.NegativeBlueBalance,
-    Effect.NegativeGreenBalance,
-    Effect.NegativeRedBalance,
     Effect.VignetteAmount,
     Effect.VignetteFeather,
     Effect.VignetteMidpoint,

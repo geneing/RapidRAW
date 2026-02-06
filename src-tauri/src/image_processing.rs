@@ -831,16 +831,7 @@ pub struct GlobalAdjustments {
     pub chromatic_aberration_blue_yellow: f32,
     pub show_clipping: u32,
     pub is_raw_image: u32,
-
-    pub enable_negative_conversion: u32,
-    pub film_base_r: f32,
-    pub film_base_g: f32,
-    pub film_base_b: f32,
-    pub negative_red_balance: f32,
-    pub negative_green_balance: f32,
-    pub negative_blue_balance: f32,
-    _pad_neg1: f32,
-    _pad_neg2: f32,
+    _pad_ca1: f32, 
 
     pub has_lut: u32,
     pub lut_intensity: f32,
@@ -1277,21 +1268,6 @@ fn get_global_adjustments_from_json(
         ColorCalibrationSettings::default()
     };
 
-    let neg_conv_enabled = js_adjustments["enableNegativeConversion"]
-        .as_bool()
-        .unwrap_or(false);
-    let film_base_hex = js_adjustments["filmBaseColor"]
-        .as_str()
-        .unwrap_or("#ff8800");
-    let film_base_rgb = if film_base_hex.starts_with('#') && film_base_hex.len() == 7 {
-        let r = u8::from_str_radix(&film_base_hex[1..3], 16).unwrap_or(255) as f32 / 255.0;
-        let g = u8::from_str_radix(&film_base_hex[3..5], 16).unwrap_or(136) as f32 / 255.0;
-        let b = u8::from_str_radix(&film_base_hex[5..7], 16).unwrap_or(0) as f32 / 255.0;
-        [r, g, b]
-    } else {
-        [1.0, 0.53, 0.0] // Default orange
-    };
-
     let tone_mapper = js_adjustments["toneMapper"].as_str().unwrap_or("basic");
     let (pipe_to_rendering, rendering_to_pipe) = calculate_agx_matrices();
 
@@ -1373,23 +1349,7 @@ fn get_global_adjustments_from_json(
             0
         },
         is_raw_image: if is_raw { 1 } else { 0 },
-
-        enable_negative_conversion: if neg_conv_enabled { 1 } else { 0 },
-        film_base_r: film_base_rgb[0],
-        film_base_g: film_base_rgb[1],
-        film_base_b: film_base_rgb[2],
-        negative_red_balance: js_adjustments["negativeRedBalance"].as_f64().unwrap_or(0.0) as f32
-            / 100.0,
-        negative_green_balance: js_adjustments["negativeGreenBalance"]
-            .as_f64()
-            .unwrap_or(0.0) as f32
-            / 100.0,
-        negative_blue_balance: js_adjustments["negativeBlueBalance"]
-            .as_f64()
-            .unwrap_or(0.0) as f32
-            / 100.0,
-        _pad_neg1: 0.0,
-        _pad_neg2: 0.0,
+        _pad_ca1: 0.0,
 
         has_lut: if js_adjustments["lutPath"].is_string() {
             1

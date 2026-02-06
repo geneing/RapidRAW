@@ -62,16 +62,7 @@ struct GlobalAdjustments {
     chromatic_aberration_blue_yellow: f32,
     show_clipping: u32,
     is_raw_image: u32,
-
-    enable_negative_conversion: u32,
-    film_base_r: f32,
-    film_base_g: f32,
-    film_base_b: f32,
-    negative_red_balance: f32,
-    negative_green_balance: f32,
-    negative_blue_balance: f32,
-    _pad_neg1: f32,
-    _pad_neg2: f32,
+    _pad_ca1: f32,
 
     has_lut: u32,
     lut_intensity: f32,
@@ -1259,15 +1250,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         initial_linear_rgb = srgb_to_linear(color_from_texture);
     } else {
         initial_linear_rgb = color_from_texture;
-    }
-
-    if (adjustments.global.enable_negative_conversion == 1u) {
-        initial_linear_rgb = vec3<f32>(1.0) - initial_linear_rgb;
-        let film_base_color = vec3<f32>(adjustments.global.film_base_r, adjustments.global.film_base_g, adjustments.global.film_base_b);
-        initial_linear_rgb -= film_base_color;
-        let balance_mult = vec3<f32>(1.0 + adjustments.global.negative_red_balance, 1.0 + adjustments.global.negative_green_balance, 1.0 + adjustments.global.negative_blue_balance);
-        initial_linear_rgb *= balance_mult;
-        initial_linear_rgb = max(initial_linear_rgb, vec3<f32>(0.0));
     }
 
     let sharpness_blurred = textureLoad(sharpness_blur_texture, id.xy, 0).rgb;

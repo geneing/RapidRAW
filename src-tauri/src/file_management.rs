@@ -146,14 +146,11 @@ fn default_included_adjustments() -> HashSet<String> {
     [
         "blacks", "brightness", "clarity", "centré", "chromaticAberrationBlueYellow",
         "chromaticAberrationRedCyan", "colorCalibration", "colorGrading", "colorNoiseReduction",
-        "contrast", "curves", "dehaze", "enableNegativeConversion", "exposure", "filmBaseColor",
-        "grainAmount", "grainRoughness", "grainSize", "highlights", "hsl", "lutIntensity",
-        "lutName", "lutPath", "lutSize", "lumaNoiseReduction", "negativeBlueBalance",
-        "negativeGreenBalance", "negativeRedBalance", "saturation", "sectionVisibility",
-        "shadows", "sharpness", "showClipping", "structure", "temperature", "tint",
-        "toneMapper", "vibrance", "vignetteAmount", "vignetteFeather", "vignetteMidpoint",
-        "flareAmount", "glowAmount", "halationAmount",
-        "vignetteRoundness", "whites",
+        "contrast", "curves", "dehaze", "exposure", "grainAmount", "grainRoughness", "grainSize",
+        "highlights", "hsl", "lutIntensity", "lutName", "lutPath", "lutSize", "lumaNoiseReduction",
+        "saturation", "sectionVisibility", "shadows", "sharpness", "showClipping", "structure", "temperature",
+        "tint", "toneMapper", "vibrance", "vignetteAmount", "vignetteFeather", "vignetteMidpoint",
+        "flareAmount", "glowAmount", "halationAmount", "vignetteRoundness", "whites",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -315,7 +312,6 @@ fn default_adjustment_visibility() -> HashMap<String, bool> {
     map.insert("presence".to_string(), true);
     map.insert("noiseReduction".to_string(), true);
     map.insert("chromaticAberration".to_string(), false);
-    map.insert("negativeConversion".to_string(), false);
     map.insert("vignette".to_string(), true);
     map.insert("colorCalibration".to_string(), false);
     map.insert("grain".to_string(), true);
