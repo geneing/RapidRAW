@@ -9,8 +9,8 @@
   - Backend: `src-tauri/src/main.rs` (Rust, Tauri)
   - Frontend: `src/main.tsx` and `src/App.tsx` (React)
 - **Key Dependencies:**
-  - Rust: `tauri`, `wgpu`, `image`, `rayon`, `serde`, `rawler`, `ort` (ONNX runtime)
-  - JS: `react`, `@tauri-apps/api`, `framer-motion`, `konva`, `lodash.debounce`, `@clerk/clerk-react`
+  - Rust: `tauri`, `wgpu`, `image`, `rayon`, `serde`, `rawler`, `ort`, `tokio`, `reqwest`, `mimalloc`
+  - JS: `react`, `@tauri-apps/api`, `@tauri-apps/plugin-*`, `framer-motion`, `konva`, `@dnd-kit/core`, `lucide-react`, `@clerk/clerk-react`
 - **Supported Platforms:** Windows, macOS, Linux
 
 ## High-Level Architecture Diagram (Textual)
@@ -20,21 +20,22 @@
   - State management (hooks, context)
   - Communicates with backend via Tauri IPC
 - **Backend (Rust/Tauri):**
-  - Image loading, processing, and export (`image_processing.rs`, `raw_processing.rs`, `gpu_processing.rs`)
-  - Mask and adjustment management (`mask_generation.rs`, `adjustments.tsx`)
-  - AI/ONNX-based features (`ai_processing.rs`, `ort`)
-  - File and metadata management
+  - Image loading, processing, and export (`image_processing.rs`, `raw_processing.rs`, `gpu_processing.rs`, `image_loader.rs`)
+  - Mask and adjustment management (`mask_generation.rs`, `src/utils/adjustments.tsx`)
+  - AI/ONNX-based features (`ai_processing.rs`, `ai_connector.rs`, `ort`)
+  - File, metadata, and tagging (`file_management.rs`, `formats.rs`, `exif_processing.rs`, `tagging.rs`)
+  - Specialty pipelines (denoise, inpaint, panorama, lens, negative) (`denoising.rs`, `inpainting.rs`, `panorama_stitching.rs`, `lens_correction.rs`, `negative_conversion.rs`)
 - **Data Flow:**
-  - User actions in UI → Tauri IPC → Rust backend for processing → Results returned to UI for display
+  - User actions in UI -> Tauri IPC -> Rust backend for processing -> Results returned to UI for display
 - **External Services:**
-  - Optional: AI model downloads, community integration (future)
+  - Optional: AI model downloads and remote assets via HTTP
 
-## Risk Snapshot: Top 5 Maintainability & Security Risks
+## Risk Snapshot: Top 5 Maintainability and Security Risks
 
 1. **Large, Monolithic Files:** Key files (e.g., `App.tsx`, `main.rs`, `image_processing.rs`) are very large, increasing cognitive load and risk of bugs.
-2. **Complex Data Serialization:** Heavy use of `serde_json::Value` and dynamic structures for adjustments/masks can lead to runtime errors and weak type safety.
-3. **GPU/Native Code Complexity:** Use of `wgpu`, ONNX, and custom GPU code increases risk of subtle bugs, platform-specific issues, and security vulnerabilities.
-4. **Rapid API Surface Growth:** Frequent changes to core modules (per git history) may outpace documentation and test coverage.
+2. **Complex Data Serialization:** Heavy use of `serde_json::Value` and dynamic structures for adjustments and masks can lead to runtime errors and weak type safety.
+3. **GPU and Native Code Complexity:** Use of `wgpu`, ONNX, and custom GPU code increases risk of subtle bugs, platform-specific issues, and security vulnerabilities.
+4. **Rapid API Surface Growth:** Frequent expansion of core modules (AI, panorama, denoise, inpainting, lens, negative conversion) may outpace documentation and test coverage.
 5. **Dependency Surface:** Many dependencies (Rust and JS) increase supply chain and update risks; some (e.g., ONNX, wgpu) are complex and security-sensitive.
 
 ## Architecture and Modules
@@ -42,34 +43,44 @@
 ### Component Map
 
 - **src-tauri/src/**
-  - `main.rs`: Application entry, module orchestration
+  - `main.rs`: Application entry, module orchestration, Tauri commands
   - `image_processing.rs`: Core image operations, metadata, adjustment application
   - `gpu_processing.rs`: GPU-accelerated processing (via wgpu)
   - `raw_processing.rs`: RAW file decoding (via `rawler`)
-  - `mask_generation.rs`: Mask/selection logic, supports additive/subtractive submasks
-  - `ai_processing.rs`: AI-based features (ONNX, subject/sky/foreground masks)
-  - `file_management.rs`, `formats.rs`, `tagging.rs`: File I/O, format support, tagging
+  - `image_loader.rs`: Image loading and compositing utilities
+  - `mask_generation.rs`: Mask and selection logic, supports additive and subtractive submasks
+  - `ai_processing.rs`, `ai_connector.rs`: AI features (ONNX models, mask generation)
+  - `denoising.rs`, `inpainting.rs`: Heavy compute pipelines
+  - `panorama_stitching.rs`: Panorama processing
+  - `lens_correction.rs`, `negative_conversion.rs`: Specialty transforms
+  - `lut_processing.rs`: LUT management
+  - `preset_converter.rs`: Preset ingestion and conversion
+  - `exif_processing.rs`, `file_management.rs`, `formats.rs`: File I/O and metadata
+  - `tagging.rs`: Tagging and classification
+  - `culling.rs`: Photo culling logic
 - **src/components/adjustments/**
-  - `Basic.tsx`, `Color.tsx`, `Curves.tsx`, `Details.tsx`, `Effects.tsx`: UI for modular, stackable adjustment panels
+  - `Basic.tsx`, `Color.tsx`, `Curves.tsx`, `Details.tsx`, `Effects.tsx`: Modular adjustment panels
+- **src/components/panel/**
+  - `Editor`, `MainLibrary`, `CommunityPage`, right-side panels for crop, presets, masks, AI, export, and metadata
 - **src/utils/adjustments.tsx**
-  - Central adjustment/mask data model, enums for adjustment types, mask modes, etc.
+  - Central adjustment and mask data model, enums for adjustment types, mask modes, and helpers
 
 ### Modular Structure of Filters
 
-- Each adjustment/filter is a React component (frontend) and a corresponding Rust function (backend).
+- Each adjustment or filter is a React component (frontend) and a corresponding Rust function (backend).
 - Adjustments are passed as JSON objects (`serde_json::Value`) between frontend and backend, allowing flexible stacking and masking.
-- Masks are defined as composable structures (`MaskDefinition`, `SubMask`) with additive/subtractive logic, supporting complex selections.
+- Masks are defined as composable structures (`MaskDefinition`, `SubMask`) with additive and subtractive logic, supporting complex selections.
 
 ### Data Model
 
 - **Image Data:**
-  - Rust: `DynamicImage`, `RgbaImage`, `Rgb32FImage` (from `image` crate)
-  - JS: Image data is not directly manipulated; adjustments/masks are sent to backend for processing
+  - Rust: `DynamicImage`, `RgbaImage`, `Rgb32FImage` (from the `image` crate)
+  - JS: Image data is not directly manipulated; adjustments and masks are sent to the backend for processing
 - **Metadata:**
   - `ImageMetadata` struct (Rust): version, rating, adjustments (as JSON), tags
 - **Masks:**
   - `MaskDefinition` (Rust/TS): id, name, visible, invert, opacity, adjustments, sub_masks
-  - `SubMask`: id, type, visible, mode (additive/subtractive), parameters
+  - `SubMask`: id, type, visible, mode (additive or subtractive), parameters
 - **Adjustments:**
   - Enum-based (TS): `BasicAdjustment`, `ColorAdjustment`, `DetailsAdjustment`, etc.
   - Passed as partial objects for composability
@@ -89,7 +100,7 @@
 - RAW decoding uses `RawImage` and related types from the `rawler` crate, with conversion to `DynamicImage` for further processing.
 
 **Frontend (TypeScript):**
-- Image data is not directly manipulated in JS/TS. Instead, the frontend manages references (file paths, IDs) and adjustment/mask objects, which are serialized and sent to the backend for processing.
+- Image data is not directly manipulated in JS/TS. Instead, the frontend manages references (file paths, IDs) and adjustment and mask objects, which are serialized and sent to the backend for processing.
 - Thumbnails and previews are handled as binary blobs or base64-encoded images received from the backend.
 
 ---
@@ -125,14 +136,14 @@ RapidRAW implements a modern color science pipeline inspired by Blender's AgX an
 - Unit and integration tests are defined in Rust modules using the standard `#[cfg(test)]` and `#[test]` attributes.
 - Key modules (e.g., `image_processing.rs`, `raw_processing.rs`, `mask_generation.rs`) include test functions for core algorithms and edge cases.
 - Tests cover image loading, adjustment application, mask logic, and file I/O.
-- No evidence of a dedicated CI pipeline for test automation in the provided context, but GitHub Actions workflows exist for build and release.
+- Build and release workflows exist, but CI coverage for tests is not confirmed here.
 
 **Frontend (TypeScript):**
-- No explicit test files or frameworks (e.g., Jest, React Testing Library) are present in the top-level context or `package.json` scripts.
+- No explicit test files or frameworks (e.g., Jest, React Testing Library) were observed in the top-level `package.json` scripts.
 - Testing is likely manual or ad hoc, with reliance on type safety and runtime validation.
 
 **Summary:**
-- The backend has basic automated test coverage for core logic, but the frontend lacks formal automated testing. Build and release workflows are present, but continuous integration for tests is not fully established.
+- The backend has basic automated test coverage for core logic, but the frontend lacks formal automated testing.
 
 ---
 
@@ -141,20 +152,20 @@ RapidRAW implements a modern color science pipeline inspired by Blender's AgX an
 RapidRAW employs several large-scale architectural optimizations to maximize image processing speed and responsiveness:
 
 - **Multithreading (CPU Parallelism):**
-  - The Rust backend uses the `rayon` crate to parallelize CPU-bound image operations across all available cores. This is applied to pixel-wise operations, adjustment stacks, and mask computations, enabling efficient use of modern multicore CPUs.
+  - The Rust backend uses the `rayon` crate to parallelize CPU-bound image operations across all available cores.
   - Batch operations (e.g., thumbnail generation, export, batch adjustments) are distributed across threads for high throughput.
 
 - **GPU Acceleration:**
-  - The core image pipeline leverages `wgpu` for GPU-accelerated processing. Intensive tasks such as tone mapping, color transforms, and real-time preview rendering are offloaded to the GPU.
-  - Custom WGSL shaders are used for fast, parallelizable operations (e.g., exposure, curves, LUTs, masking), minimizing CPU-GPU data transfer and maximizing throughput.
-  - GPU context management is handled via a global context, with device/queue reuse to avoid costly reinitialization.
+  - The core image pipeline leverages `wgpu` for GPU-accelerated processing.
+  - Custom WGSL shaders are used for fast, parallelizable operations (e.g., exposure, curves, LUTs, masking).
+  - GPU context management is handled via a global context, with device and queue reuse to avoid costly reinitialization.
 
 - **Hybrid Processing Pipeline:**
   - The architecture allows dynamic selection between CPU and GPU code paths depending on operation type, image size, and hardware capabilities.
-  - Fallbacks to CPU are provided for unsupported hardware or headless environments, ensuring broad compatibility.
+  - Fallbacks to CPU are provided for unsupported hardware or headless environments.
 
 - **Memory and Data Flow Optimizations:**
-  - Image data is processed in high-precision (32F) buffers on the GPU, with conversion to lower-precision formats only for display/export.
+  - Image data is processed in high-precision (32F) buffers on the GPU, with conversion to lower-precision formats only for display and export.
   - Intermediate results are cached and reused where possible to avoid redundant computation.
   - Mask and adjustment data are passed as compact JSON structures, reducing IPC overhead between frontend and backend.
 
@@ -172,43 +183,33 @@ These strategies collectively enable RapidRAW to deliver real-time feedback and 
 
 ### Mask and Modifier Implementation
 
-- Masks are composable, with submasks supporting additive/subtractive logic
+- Masks are composable, with submasks supporting additive and subtractive logic
 - Each mask can have its own set of adjustments, enabling local edits
-- Mask logic is implemented in both Rust (processing) and TS (UI/model)
+- Mask logic is implemented in both Rust (processing) and TS (UI and model)
 
 ## Methodology and Coverage
 
 - **Directories by Size:**
-  - `src-tauri/` (4.2G): Rust backend, main logic
-  - `node_modules/` (240M): JS dependencies
-  - `public/` (7.9M): Assets
-  - `src/` (976K): React frontend
-- **Recent Change Frequency:**
-  - Most changed: `src-tauri/src/main.rs`, `src-tauri/src/image_processing.rs`, `src/App.tsx`, `src/components/panel/Editor.jsx`
+  - `src-tauri/` (7551.3 MB): Rust backend, main logic, models
+  - `node_modules/` (169 MB): JS dependencies
+  - `dist/` (8 MB): Frontend build output
+  - `public/` (6.7 MB): Assets
+  - `src/` (1 MB): React frontend
+  - `packaging/` (0.8 MB): Packaging assets
+- **Recently Modified (git status):**
+  - `src-tauri/Cargo.toml`
+  - `src-tauri/rawler` (submodule or nested repo)
 - **Files Examined:**
-  - `src-tauri/src/main.rs` (lines 1–60)
-  - `src-tauri/src/image_processing.rs` (lines 1–60)
-  - `src-tauri/src/gpu_processing.rs` (lines 1–60)
-  - `src-tauri/src/raw_processing.rs` (lines 1–60)
-  - `src-tauri/src/mask_generation.rs` (lines 1–60)
-  - `src/utils/adjustments.tsx` (lines 1–60)
-  - `src/components/adjustments/Basic.tsx` (lines 1–60)
-  - `src/components/adjustments/Color.tsx` (lines 1–60)
-  - `src/components/adjustments/Curves.tsx` (lines 1–60)
-  - `src/components/adjustments/Details.tsx` (lines 1–60)
-  - `src/components/adjustments/Effects.tsx` (lines 1–60)
-  - `src/main.tsx` (lines 1–60)
-  - `src/App.tsx` (lines 1–60)
-  - `README.md` (lines 1–60)
-  - `package.json`, `Cargo.toml`, `Cargo.lock`, `tsconfig.json`
+  - `src-tauri/Cargo.toml`
+  - `package.json`
+  - `src-tauri/src/main.rs` (lines 1-120)
+  - `src-tauri/src/gpu_processing.rs` (lines 1-160)
+  - `src/App.tsx` (lines 1-120)
 
 - **Dependency Map:**
-  - Rust: See `Cargo.toml` for runtime dependencies (Tauri, wgpu, image, ort, etc.)
-  - JS: See `package.json` for runtime/dev dependencies (React, Tauri API, framer-motion, etc.)
-
-- **External Discussion:**
-  - RapidRAW is discussed on [pixls.us](https://discuss.pixls.us/) as a GPU-accelerated, open-source RAW editor, with positive feedback on AgX color management and performance.
+  - Rust: See `src-tauri/Cargo.toml` for runtime dependencies (Tauri 2.9, wgpu 28, image 0.25, ort 2.0.0-rc, reqwest 0.12, tokio 1.x, etc.)
+  - JS: See `package.json` for runtime and dev dependencies (React 19, Tauri API 2.9, framer-motion, konva, Tailwind, Vite 7, etc.)
 
 ---
 
-*Generated by GitHub Copilot on 2025-11-02. For full details, see cited file paths and line ranges above.*
+*Updated by Codex on 2026-02-07 based on local repository state.*
