@@ -9,6 +9,7 @@ use wgpu::util::{DeviceExt, TextureDataOrder};
 use crate::image_processing::{AllAdjustments, GpuContext};
 use crate::lut_processing::Lut;
 use crate::{AppState, GpuImageCache};
+use crate::cubecl_processing;
 
 pub fn get_or_init_gpu_context(state: &tauri::State<AppState>) -> Result<GpuContext, String> {
     let mut context_lock = state.gpu_context.lock().unwrap();
@@ -838,6 +839,32 @@ pub fn process_and_get_dynamic_image(
     lut: Option<Arc<Lut>>,
     caller_id: &str,
 ) -> Result<DynamicImage, String> {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum CubeclMode {
+        Off,
+        Benchmark,
+        PreferCubecl,
+    }
+
+    fn cubecl_mode_from_env() -> CubeclMode {
+        match std::env::var("RAPIDRAW_CUBECL_MODE")
+            .unwrap_or_else(|_| "off".to_string())
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "benchmark" | "compare" => CubeclMode::Benchmark,
+            "cubecl" | "prefer_cubecl" => CubeclMode::PreferCubecl,
+            _ => CubeclMode::Off,
+        }
+    }
+
+    fn cubecl_tolerance_from_env() -> u8 {
+        std::env::var("RAPIDRAW_CUBECL_MATCH_TOLERANCE")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(2)
+    }
+
     let (width, height) = base_image.dimensions();
     log::info!(
         "[Caller: {}] GPU processing called for {}x{} image.",
@@ -923,9 +950,12 @@ pub fn process_and_get_dynamic_image(
     }
 
     let cache = cache_lock.as_ref().unwrap();
-    let start_time = Instant::now();
+    let cubecl_mode = cubecl_mode_from_env();
+    let tolerance = cubecl_tolerance_from_env();
 
-    let processed_pixels = processor.run(
+    let wgsl_start_time = Instant::now();
+
+    let wgsl_pixels = processor.run(
         &cache.texture_view,
         cache.width,
         cache.height,
@@ -934,15 +964,199 @@ pub fn process_and_get_dynamic_image(
         lut,
     )?;
 
-    let duration = start_time.elapsed();
-    log::info!(
-        "GPU adjustments for {}x{} image took {:?}",
-        width,
-        height,
-        duration
-    );
+    let wgsl_duration = wgsl_start_time.elapsed();
+    let mut final_pixels = wgsl_pixels.clone();
 
-    let img_buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, processed_pixels)
+    if cubecl_mode != CubeclMode::Off {
+        match cubecl_processing::process_with_cubecl(
+            base_image,
+            all_adjustments,
+            Some(&wgsl_pixels),
+        ) {
+            Ok(cubecl_result) => {
+                let diff_stats =
+                    cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, tolerance);
+                log::info!(
+                    "[GPU Compare][Caller: {}] {}x{} WGSL {:?} | CubeCL total {:?} (thr {:?}, blur {:?}, main {:?}) | fallback={} | mismatch {}/{} (tol {}) | max diff {} | mean diff {:.4}",
+                    caller_id,
+                    width,
+                    height,
+                    wgsl_duration,
+                    cubecl_result.timings.total,
+                    cubecl_result.timings.flare_threshold,
+                    cubecl_result.timings.flare_blur,
+                    cubecl_result.timings.main,
+                    cubecl_result.used_wgsl_fallback,
+                    diff_stats.mismatched_values,
+                    diff_stats.compared_values,
+                    tolerance,
+                    diff_stats.max_abs_diff,
+                    diff_stats.mean_abs_diff
+                );
+
+                if let Some(reason) = cubecl_result.fallback_reason.as_deref() {
+                    log::info!(
+                        "[GPU Compare][Caller: {}] CubeCL fallback reason: {}",
+                        caller_id,
+                        reason
+                    );
+                }
+
+                if cubecl_mode == CubeclMode::PreferCubecl {
+                    final_pixels = cubecl_result.pixels;
+                }
+            }
+            Err(error) => {
+                log::warn!(
+                    "[GPU Compare][Caller: {}] CubeCL run failed for {}x{}: {}",
+                    caller_id,
+                    width,
+                    height,
+                    error
+                );
+                log::info!(
+                    "GPU adjustments for {}x{} image took {:?} (WGSL only)",
+                    width,
+                    height,
+                    wgsl_duration
+                );
+            }
+        }
+    } else {
+        log::info!(
+            "GPU adjustments for {}x{} image took {:?} (WGSL)",
+            width,
+            height,
+            wgsl_duration
+        );
+    }
+
+    let img_buf = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(width, height, final_pixels)
         .ok_or("Failed to create image buffer from GPU data")?;
     Ok(DynamicImage::ImageRgba8(img_buf))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cubecl_processing;
+
+    fn make_test_image(width: u32, height: u32) -> DynamicImage {
+        let mut img = image::RgbaImage::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let r = ((x as f32 / width as f32) * 255.0).round() as u8;
+                let g = ((y as f32 / height as f32) * 255.0).round() as u8;
+                let b = (((x + y) as f32 / (width + height) as f32) * 255.0).round() as u8;
+                img.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+            }
+        }
+        DynamicImage::ImageRgba8(img)
+    }
+
+    fn test_gpu_context() -> Option<GpuContext> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            ..Default::default()
+        }))
+        .ok()?;
+
+        let mut required_features = wgpu::Features::empty();
+        if adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+        {
+            required_features |= wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        }
+
+        let limits = adapter.limits();
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("WGSL vs CubeCL test device"),
+                required_features,
+                required_limits: limits.clone(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            },
+        ))
+        .ok()?;
+
+        Some(GpuContext {
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+            limits,
+        })
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_identity_with_tolerance() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+
+        let width = 32;
+        let height = 32;
+        let image = make_test_image(width, height);
+        let processor =
+            GpuProcessor::new(context.clone(), width.next_multiple_of(256), height.next_multiple_of(256))
+                .expect("Failed to create GPU processor");
+
+        let image_f16 = to_rgba_f16(&image);
+        let texture = context.device.create_texture_with_data(
+            &context.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("WGSL test input texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            TextureDataOrder::MipMajor,
+            bytemuck::cast_slice(&image_f16),
+        );
+        let texture_view = texture.create_view(&Default::default());
+
+        let adjustments = AllAdjustments::default();
+        let wgsl_pixels = processor
+            .run(&texture_view, width, height, adjustments, &[], None)
+            .expect("WGSL run failed");
+
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(&image, adjustments, None)
+            .expect("CubeCL run failed")
+            .pixels;
+
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 2);
+        assert_eq!(diff.compared_values, (width * height * 4) as usize);
+        assert_eq!(diff.mismatched_values, 0);
+    }
+
+    #[test]
+    fn cubecl_uses_wgsl_fallback_for_unsupported_adjustments() {
+        let width = 8;
+        let height = 8;
+        let image = make_test_image(width, height);
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.tonemapper_mode = 1;
+
+        let fallback_pixels = vec![13u8; (width * height * 4) as usize];
+        let result = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            Some(&fallback_pixels),
+        )
+        .expect("CubeCL run failed");
+
+        assert!(result.used_wgsl_fallback);
+        assert_eq!(result.pixels, fallback_pixels);
+        assert!(result.fallback_reason.is_some());
+    }
 }

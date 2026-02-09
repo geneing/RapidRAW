@@ -7,6 +7,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 mod ai_processing;
 mod ai_connector;
 mod culling;
+mod cubecl_processing;
 mod denoising;
 mod exif_processing;
 mod file_management;
