@@ -1,15 +1,15 @@
 use crate::formats::is_raw_file;
 use crate::image_loader::load_base_image_from_bytes;
 use crate::image_processing::apply_cpu_default_raw_processing;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use image::{DynamicImage, GenericImageView, ImageFormat, Rgb, Rgb32FImage};
 use rayon::prelude::*;
 use std::cmp::Ordering;
 use std::fs;
 use std::io::Cursor;
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering as AtomicOrdering};
 use tauri::{AppHandle, Emitter};
 
 const BLOCK_SIZE: usize = 8;
@@ -223,23 +223,15 @@ fn run_bm3d_step_joint(
     ref_patches.par_iter().for_each(|&(rx, ry)| {
         let c = counter.fetch_add(1, AtomicOrdering::Relaxed);
         if c % 200 == 0 {
-             let pct = (c as f32 / total_work as f32) * 100.0;
-             let step_str = if is_step_1 { "Step 1/2" } else { "Step 2/2" };
-             let msg = format!("{} - {:.0}%", step_str, pct);
-             let _ = app_handle.emit("denoise-progress", msg);
+            let pct = (c as f32 / total_work as f32) * 100.0;
+            let step_str = if is_step_1 { "Step 1/2" } else { "Step 2/2" };
+            let msg = format!("{} - {:.0}%", step_str, pct);
+            let _ = app_handle.emit("denoise-progress", msg);
         }
 
         let mut group_locs_buf = [(0, 0); MAX_GROUP_SIZE];
-        let group_size = block_matching_joint(
-            guide,
-            w,
-            h,
-            rx,
-            ry,
-            is_step_1,
-            params,
-            &mut group_locs_buf,
-        );
+        let group_size =
+            block_matching_joint(guide, w, h, rx, ry, is_step_1, params, &mut group_locs_buf);
         let group_locs = &group_locs_buf[0..group_size];
 
         for ch in 0..num_channels {
@@ -339,11 +331,7 @@ fn wiener_filter(noisy: &mut [f32], guide: &[f32], sigma: f32) -> f32 {
         *n *= coef;
         sum += coef * coef;
     }
-    if sum > 0.0 {
-        1.0 / sum
-    } else {
-        1.0
-    }
+    if sum > 0.0 { 1.0 / sum } else { 1.0 }
 }
 
 #[derive(Clone, Copy)]
@@ -365,8 +353,11 @@ fn block_matching_joint(
     out_buf: &mut [(usize, usize)],
 ) -> usize {
     const MAX_CANDIDATES: usize = 1024;
-    let mut candidates: [Match; MAX_CANDIDATES] =
-        [Match { dist: f32::MAX, x: 0, y: 0 }; MAX_CANDIDATES];
+    let mut candidates: [Match; MAX_CANDIDATES] = [Match {
+        dist: f32::MAX,
+        x: 0,
+        y: 0,
+    }; MAX_CANDIDATES];
     let mut cand_count = 0;
 
     let threshold = if is_step_1 {

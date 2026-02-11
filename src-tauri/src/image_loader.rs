@@ -1,23 +1,23 @@
 use crate::Cursor;
 use crate::formats::is_raw_file;
 use crate::image_processing::{apply_orientation, remove_raw_artifacts_and_enhance};
-use crate::mask_generation::{generate_mask_bitmap, MaskDefinition, SubMask};
+use crate::mask_generation::{MaskDefinition, SubMask, generate_mask_bitmap};
 use crate::raw_processing::develop_raw_image;
-use anyhow::{anyhow, Context, Result};
-use base64::{engine::general_purpose, Engine as _};
+use anyhow::{Context, Result, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use exif::{Reader as ExifReader, Tag};
 use exr::image::pixel_vec::PixelVec;
 use exr::prelude::*;
-use image::{imageops, DynamicImage, GenericImageView, ImageReader};
+use image::{DynamicImage, GenericImageView, ImageReader, imageops};
 use qoi::Channels;
 use rawler::Orientation;
 use rayon::prelude::*;
 use serde::Deserialize;
-use serde_json::{from_value, Value};
+use serde_json::{Value, from_value};
 use std::panic;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Instant;
 
@@ -291,8 +291,12 @@ pub fn composite_patches_on_image(
 
         let (patch_w, patch_h) = color_image_u8.dimensions();
         let color_image_f32 = if base_w != patch_w || base_h != patch_h {
-            let resized =
-                imageops::resize(&color_image_u8, base_w, base_h, imageops::FilterType::Lanczos3);
+            let resized = imageops::resize(
+                &color_image_u8,
+                base_w,
+                base_h,
+                imageops::FilterType::Lanczos3,
+            );
             DynamicImage::ImageRgb8(resized).to_rgb32f()
         } else {
             DynamicImage::ImageRgb8(color_image_u8).to_rgb32f()

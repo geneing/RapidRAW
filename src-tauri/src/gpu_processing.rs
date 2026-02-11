@@ -6,10 +6,10 @@ use half::f16;
 use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, Rgba};
 use wgpu::util::{DeviceExt, TextureDataOrder};
 
+use crate::cubecl_processing;
 use crate::image_processing::{AllAdjustments, GpuContext};
 use crate::lut_processing::Lut;
 use crate::{AppState, GpuImageCache};
-use crate::cubecl_processing;
 
 pub fn get_or_init_gpu_context(state: &tauri::State<AppState>) -> Result<GpuContext, String> {
     let mut context_lock = state.gpu_context.lock().unwrap();
@@ -40,16 +40,14 @@ pub fn get_or_init_gpu_context(state: &tauri::State<AppState>) -> Result<GpuCont
 
     let limits = adapter.limits();
 
-    let (device, queue) = pollster::block_on(adapter.request_device(
-        &wgpu::DeviceDescriptor {
-            label: Some("Processing Device"),
-            required_features,
-            required_limits: limits.clone(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        },
-    ))
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("Processing Device"),
+        required_features,
+        required_limits: limits.clone(),
+        experimental_features: wgpu::ExperimentalFeatures::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }))
     .map_err(|e| e.to_string())?;
 
     let new_context = GpuContext {
@@ -129,11 +127,7 @@ fn read_texture_data(
 
 fn to_rgba_f16(img: &DynamicImage) -> Vec<f16> {
     let rgba_f32 = img.to_rgba32f();
-    rgba_f32
-        .into_raw()
-        .into_iter()
-        .map(f16::from_f32)
-        .collect()
+    rgba_f32.into_raw().into_iter().map(f16::from_f32).collect()
 }
 
 #[repr(C)]
@@ -168,7 +162,7 @@ pub struct GpuProcessor {
     h_blur_pipeline: wgpu::ComputePipeline,
     v_blur_pipeline: wgpu::ComputePipeline,
     blur_params_buffer: wgpu::Buffer,
-    
+
     flare_bgl_0: wgpu::BindGroupLayout,
     flare_bgl_1: wgpu::BindGroupLayout,
     flare_threshold_pipeline: wgpu::ComputePipeline,
@@ -178,7 +172,7 @@ pub struct GpuProcessor {
     flare_ghosts_view: wgpu::TextureView,
     flare_final_view: wgpu::TextureView,
     flare_sampler: wgpu::Sampler,
-    
+
     main_bgl: wgpu::BindGroupLayout,
     main_pipeline: wgpu::ComputePipeline,
     adjustments_buffer: wgpu::Buffer,
@@ -209,9 +203,36 @@ impl GpuProcessor {
         let blur_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Blur BGL"),
             entries: &[
-                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -254,26 +275,77 @@ impl GpuProcessor {
         let flare_bgl_0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Flare BGL 0"),
             entries: &[
-                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
         let flare_bgl_1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Flare BGL 1"),
             entries: &[
-                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba16Float, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
             ],
         });
 
-        let flare_threshold_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Flare Threshold Layout"),
-            bind_group_layouts: &[&flare_bgl_0],
-            immediate_size: 0,
-        });
+        let flare_threshold_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Flare Threshold Layout"),
+                bind_group_layouts: &[&flare_bgl_0],
+                immediate_size: 0,
+            });
 
         let flare_ghosts_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Flare Ghosts Layout"),
@@ -281,23 +353,25 @@ impl GpuProcessor {
             immediate_size: 0,
         });
 
-        let flare_threshold_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Flare Threshold Pipeline"),
-            layout: Some(&flare_threshold_layout),
-            module: &flare_shader,
-            entry_point: Some("threshold_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let flare_threshold_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Flare Threshold Pipeline"),
+                layout: Some(&flare_threshold_layout),
+                module: &flare_shader,
+                entry_point: Some("threshold_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
-        let flare_ghosts_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Flare Ghosts Pipeline"),
-            layout: Some(&flare_ghosts_layout),
-            module: &flare_shader,
-            entry_point: Some("ghosts_main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let flare_ghosts_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Flare Ghosts Pipeline"),
+                layout: Some(&flare_ghosts_layout),
+                module: &flare_shader,
+                entry_point: Some("ghosts_main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         let flare_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Flare Params Buffer"),
@@ -308,7 +382,11 @@ impl GpuProcessor {
 
         let flare_tex_desc = wgpu::TextureDescriptor {
             label: Some("Flare Tex"),
-            size: wgpu::Extent3d { width: FLARE_MAP_SIZE, height: FLARE_MAP_SIZE, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: FLARE_MAP_SIZE,
+                height: FLARE_MAP_SIZE,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -339,24 +417,115 @@ impl GpuProcessor {
         });
 
         let mut bind_group_layout_entries = vec![
-            wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::StorageTexture { access: wgpu::StorageTextureAccess::WriteOnly, format: wgpu::TextureFormat::Rgba8Unorm, view_dimension: wgpu::TextureViewDimension::D2 }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
         ];
-        
-        for i in 0..MAX_MASKS {
-            bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 3 + i, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
-        }
-        
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 3 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D3, multisampled: false }, count: None });
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 4 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering), count: None });
-        
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 5 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 6 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 7 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
 
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 8 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None });
-        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry { binding: 9 + MAX_MASKS, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None });
+        for i in 0..MAX_MASKS {
+            bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 3 + i,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            });
+        }
+
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 3 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            },
+            count: None,
+        });
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 4 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+            count: None,
+        });
+
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 5 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 6 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 7 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 8 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 9 + MAX_MASKS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        });
 
         let main_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Main BGL"),
@@ -387,7 +556,11 @@ impl GpuProcessor {
 
         let dummy_texture_desc = wgpu::TextureDescriptor {
             label: Some("Dummy Texture"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -398,14 +571,24 @@ impl GpuProcessor {
         let dummy_blur_texture = device.create_texture(&dummy_texture_desc);
         let dummy_blur_view = dummy_blur_texture.create_view(&Default::default());
 
-        let dummy_mask_texture = device.create_texture(&wgpu::TextureDescriptor { format: wgpu::TextureFormat::R8Unorm, ..dummy_texture_desc });
+        let dummy_mask_texture = device.create_texture(&wgpu::TextureDescriptor {
+            format: wgpu::TextureFormat::R8Unorm,
+            ..dummy_texture_desc
+        });
         let dummy_mask_view = dummy_mask_texture.create_view(&Default::default());
 
-        let dummy_lut_texture = device.create_texture(&wgpu::TextureDescriptor { dimension: wgpu::TextureDimension::D3, ..dummy_texture_desc });
+        let dummy_lut_texture = device.create_texture(&wgpu::TextureDescriptor {
+            dimension: wgpu::TextureDimension::D3,
+            ..dummy_texture_desc
+        });
         let dummy_lut_view = dummy_lut_texture.create_view(&Default::default());
         let dummy_lut_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
 
-        let max_tile_size = wgpu::Extent3d { width: max_width, height: max_height, depth_or_array_layers: 1 };
+        let max_tile_size = wgpu::Extent3d {
+            width: max_width,
+            height: max_height,
+            depth_or_array_layers: 1,
+        };
 
         let reusable_texture_desc = wgpu::TextureDescriptor {
             label: None,
@@ -418,16 +601,28 @@ impl GpuProcessor {
             view_formats: &[],
         };
 
-        let ping_pong_texture = device.create_texture(&wgpu::TextureDescriptor { label: Some("Ping Pong Texture"), ..reusable_texture_desc });
+        let ping_pong_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Ping Pong Texture"),
+            ..reusable_texture_desc
+        });
         let ping_pong_view = ping_pong_texture.create_view(&Default::default());
 
-        let sharpness_blur_texture = device.create_texture(&wgpu::TextureDescriptor { label: Some("Sharpness Blur Texture"), ..reusable_texture_desc });
+        let sharpness_blur_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Sharpness Blur Texture"),
+            ..reusable_texture_desc
+        });
         let sharpness_blur_view = sharpness_blur_texture.create_view(&Default::default());
 
-        let clarity_blur_texture = device.create_texture(&wgpu::TextureDescriptor { label: Some("Clarity Blur Texture"), ..reusable_texture_desc });
+        let clarity_blur_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Clarity Blur Texture"),
+            ..reusable_texture_desc
+        });
         let clarity_blur_view = clarity_blur_texture.create_view(&Default::default());
 
-        let structure_blur_texture = device.create_texture(&wgpu::TextureDescriptor { label: Some("Structure Blur Texture"), ..reusable_texture_desc });
+        let structure_blur_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Structure Blur Texture"),
+            ..reusable_texture_desc
+        });
         let structure_blur_view = structure_blur_texture.create_view(&Default::default());
 
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -561,7 +756,11 @@ impl GpuProcessor {
         if adjustments.global.flare_amount > 0.0 {
             let mut encoder = device.create_command_encoder(&Default::default());
 
-            let aspect_ratio = if height > 0 { width as f32 / height as f32 } else { 1.0 };
+            let aspect_ratio = if height > 0 {
+                width as f32 / height as f32
+            } else {
+                1.0
+            };
             let f_params = FlareParams {
                 amount: adjustments.global.flare_amount,
                 is_raw: adjustments.global.is_raw_image,
@@ -578,10 +777,22 @@ impl GpuProcessor {
                 label: Some("Flare BG0"),
                 layout: &self.flare_bgl_0,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input_texture_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.flare_params_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.flare_sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(input_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.flare_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.flare_sampler),
+                    },
                 ],
             });
 
@@ -596,10 +807,22 @@ impl GpuProcessor {
                 label: Some("Flare BG0 Ghosts"),
                 layout: &self.flare_bgl_0,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input_texture_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.flare_final_view) }, 
-                    wgpu::BindGroupEntry { binding: 2, resource: self.flare_params_buffer.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.flare_sampler) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(input_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_final_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.flare_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&self.flare_sampler),
+                    },
                 ],
             });
 
@@ -607,28 +830,38 @@ impl GpuProcessor {
                 label: Some("Flare BG1"),
                 layout: &self.flare_bgl_1,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.flare_ghosts_view) },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_ghosts_view),
+                    },
                 ],
             });
 
             {
                 let mut cpass = encoder.begin_compute_pass(&Default::default());
                 cpass.set_pipeline(&self.flare_ghosts_pipeline);
-                cpass.set_bind_group(0, &bg0_ghosts, &[]); 
+                cpass.set_bind_group(0, &bg0_ghosts, &[]);
                 cpass.set_bind_group(1, &bg1, &[]);
                 cpass.dispatch_workgroups(FLARE_MAP_SIZE / 16, FLARE_MAP_SIZE / 16, 1);
             }
-            
+
             queue.submit(Some(encoder.finish()));
 
             let mut blur_encoder = device.create_command_encoder(&Default::default());
-            
+
             let b_params = BlurParams {
-                radius: 12, 
-                tile_offset_x: 0, tile_offset_y: 0, 
-                input_width: FLARE_MAP_SIZE, input_height: FLARE_MAP_SIZE,
-                _pad1: 0, _pad2: 0, _pad3: 0,
+                radius: 12,
+                tile_offset_x: 0,
+                tile_offset_y: 0,
+                input_width: FLARE_MAP_SIZE,
+                input_height: FLARE_MAP_SIZE,
+                _pad1: 0,
+                _pad2: 0,
+                _pad3: 0,
             };
             queue.write_buffer(&self.blur_params_buffer, 0, bytemuck::bytes_of(&b_params));
 
@@ -636,19 +869,37 @@ impl GpuProcessor {
                 label: Some("Flare Blur H"),
                 layout: &self.blur_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.flare_ghosts_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.blur_params_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_ghosts_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.blur_params_buffer.as_entire_binding(),
+                    },
                 ],
             });
-            
+
             let v_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Flare Blur V"),
                 layout: &self.blur_bgl,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.flare_final_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.blur_params_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_threshold_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.flare_final_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.blur_params_buffer.as_entire_binding(),
+                    },
                 ],
             });
 
@@ -658,14 +909,14 @@ impl GpuProcessor {
                 cpass.set_bind_group(0, &h_bg, &[]);
                 cpass.dispatch_workgroups(FLARE_MAP_SIZE / 256 + 1, FLARE_MAP_SIZE, 1);
             }
-            
+
             {
                 let mut cpass = blur_encoder.begin_compute_pass(&Default::default());
                 cpass.set_pipeline(&self.v_blur_pipeline);
                 cpass.set_bind_group(0, &v_bg, &[]);
                 cpass.dispatch_workgroups(FLARE_MAP_SIZE, FLARE_MAP_SIZE / 256 + 1, 1);
             }
-            
+
             queue.submit(Some(blur_encoder.finish()));
         }
 
@@ -708,7 +959,9 @@ impl GpuProcessor {
                         tile_offset_y: input_y_start,
                         input_width: input_width,
                         input_height: input_height,
-                        _pad1: 0, _pad2: 0, _pad3: 0,
+                        _pad1: 0,
+                        _pad2: 0,
+                        _pad3: 0,
                     };
                     queue.write_buffer(&self.blur_params_buffer, 0, bytemuck::bytes_of(&params));
 
@@ -718,9 +971,18 @@ impl GpuProcessor {
                         label: Some("H-Blur BG"),
                         layout: &self.blur_bgl,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input_texture_view) },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.ping_pong_view) },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.blur_params_buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(input_texture_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&self.ping_pong_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: self.blur_params_buffer.as_entire_binding(),
+                            },
                         ],
                     });
 
@@ -735,9 +997,18 @@ impl GpuProcessor {
                         label: Some("V-Blur BG"),
                         layout: &self.blur_bgl,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.ping_pong_view) },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(output_view) },
-                            wgpu::BindGroupEntry { binding: 2, resource: self.blur_params_buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&self.ping_pong_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(output_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: self.blur_params_buffer.as_entire_binding(),
+                            },
                         ],
                     });
 
@@ -768,24 +1039,73 @@ impl GpuProcessor {
                 );
 
                 let mut bind_group_entries = vec![
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(input_texture_view) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.output_texture_view) },
-                    wgpu::BindGroupEntry { binding: 2, resource: self.adjustments_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(input_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.output_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.adjustments_buffer.as_entire_binding(),
+                    },
                 ];
                 for i in 0..MAX_MASKS as usize {
                     let view = mask_views.get(i).unwrap_or(&self.dummy_mask_view);
-                    bind_group_entries.push(wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(view) });
+                    bind_group_entries.push(wgpu::BindGroupEntry {
+                        binding: 3 + i as u32,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    });
                 }
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 3 + MAX_MASKS, resource: wgpu::BindingResource::TextureView(&lut_texture_view) });
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 4 + MAX_MASKS, resource: wgpu::BindingResource::Sampler(&lut_sampler) });
-                
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 5 + MAX_MASKS, resource: wgpu::BindingResource::TextureView(if did_create_sharpness_blur { &self.sharpness_blur_view } else { &self.dummy_blur_view }) });
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 6 + MAX_MASKS, resource: wgpu::BindingResource::TextureView(if did_create_clarity_blur { &self.clarity_blur_view } else { &self.dummy_blur_view }) });
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 7 + MAX_MASKS, resource: wgpu::BindingResource::TextureView(if did_create_structure_blur { &self.structure_blur_view } else { &self.dummy_blur_view }) });
-                
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 3 + MAX_MASKS,
+                    resource: wgpu::BindingResource::TextureView(&lut_texture_view),
+                });
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 4 + MAX_MASKS,
+                    resource: wgpu::BindingResource::Sampler(&lut_sampler),
+                });
+
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 5 + MAX_MASKS,
+                    resource: wgpu::BindingResource::TextureView(if did_create_sharpness_blur {
+                        &self.sharpness_blur_view
+                    } else {
+                        &self.dummy_blur_view
+                    }),
+                });
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 6 + MAX_MASKS,
+                    resource: wgpu::BindingResource::TextureView(if did_create_clarity_blur {
+                        &self.clarity_blur_view
+                    } else {
+                        &self.dummy_blur_view
+                    }),
+                });
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 7 + MAX_MASKS,
+                    resource: wgpu::BindingResource::TextureView(if did_create_structure_blur {
+                        &self.structure_blur_view
+                    } else {
+                        &self.dummy_blur_view
+                    }),
+                });
+
                 let use_flare = adjustments.global.flare_amount > 0.0;
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 8 + MAX_MASKS, resource: wgpu::BindingResource::TextureView(if use_flare { &self.flare_final_view } else { &self.dummy_blur_view }) });
-                bind_group_entries.push(wgpu::BindGroupEntry { binding: 9 + MAX_MASKS, resource: wgpu::BindingResource::Sampler(&self.flare_sampler) });
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 8 + MAX_MASKS,
+                    resource: wgpu::BindingResource::TextureView(if use_flare {
+                        &self.flare_final_view
+                    } else {
+                        &self.dummy_blur_view
+                    }),
+                });
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 9 + MAX_MASKS,
+                    resource: wgpu::BindingResource::Sampler(&self.flare_sampler),
+                });
 
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Tile Bind Group"),
@@ -952,6 +1272,7 @@ pub fn process_and_get_dynamic_image(
     let cache = cache_lock.as_ref().unwrap();
     let cubecl_mode = cubecl_mode_from_env();
     let tolerance = cubecl_tolerance_from_env();
+    let lut_for_cubecl = lut.clone();
 
     let wgsl_start_time = Instant::now();
 
@@ -971,13 +1292,18 @@ pub fn process_and_get_dynamic_image(
         match cubecl_processing::process_with_cubecl(
             base_image,
             all_adjustments,
+            mask_bitmaps,
+            lut_for_cubecl.as_deref(),
             Some(&wgsl_pixels),
         ) {
             Ok(cubecl_result) => {
-                let diff_stats =
-                    cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, tolerance);
+                let diff_stats = cubecl_processing::compare_images(
+                    &wgsl_pixels,
+                    &cubecl_result.pixels,
+                    tolerance,
+                );
                 log::info!(
-                    "[GPU Compare][Caller: {}] {}x{} WGSL {:?} | CubeCL total {:?} (thr {:?}, blur {:?}, main {:?}) | fallback={} | mismatch {}/{} (tol {}) | max diff {} | mean diff {:.4}",
+                    "[GPU Compare][Caller: {}] {}x{} WGSL {:?} | CubeCL total {:?} (thr {:?}, blur {:?}, main {:?}, mask {:?}) | masks={} active_px={} mean_inf={:.4} max_inf={:.4} | fallback={} | mismatch {}/{} (tol {}) | max diff {} | mean diff {:.4} | {}",
                     caller_id,
                     width,
                     height,
@@ -986,12 +1312,18 @@ pub fn process_and_get_dynamic_image(
                     cubecl_result.timings.flare_threshold,
                     cubecl_result.timings.flare_blur,
                     cubecl_result.timings.main,
+                    cubecl_result.timings.mask_composite,
+                    cubecl_result.mask_stats.mask_count,
+                    cubecl_result.mask_stats.active_pixels,
+                    cubecl_result.mask_stats.mean_influence,
+                    cubecl_result.mask_stats.max_influence,
                     cubecl_result.used_wgsl_fallback,
                     diff_stats.mismatched_values,
                     diff_stats.compared_values,
                     tolerance,
                     diff_stats.max_abs_diff,
-                    diff_stats.mean_abs_diff
+                    diff_stats.mean_abs_diff,
+                    cubecl_result.parity_dashboard
                 );
 
                 if let Some(reason) = cubecl_result.fallback_reason.as_deref() {
@@ -1040,6 +1372,8 @@ pub fn process_and_get_dynamic_image(
 mod tests {
     use super::*;
     use crate::cubecl_processing;
+    use crate::image_processing::{ColorCalibrationSettings, ColorGradeSettings, HslColor, Point};
+    use crate::lut_processing::Lut;
 
     fn make_test_image(width: u32, height: u32) -> DynamicImage {
         let mut img = image::RgbaImage::new(width, height);
@@ -1052,6 +1386,21 @@ mod tests {
             }
         }
         DynamicImage::ImageRgba8(img)
+    }
+
+    fn make_hdr_test_image(width: u32, height: u32) -> DynamicImage {
+        let mut img = image::Rgba32FImage::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let fx = x as f32 / (width.saturating_sub(1).max(1)) as f32;
+                let fy = y as f32 / (height.saturating_sub(1).max(1)) as f32;
+                let r = 0.5 + fx * 7.5;
+                let g = 0.3 + fy * 5.5;
+                let b = 0.2 + ((fx + fy) * 0.5) * 6.0;
+                img.put_pixel(x, y, image::Rgba([r, g, b, 1.0]));
+            }
+        }
+        DynamicImage::ImageRgba32F(img)
     }
 
     fn test_gpu_context() -> Option<GpuContext> {
@@ -1071,16 +1420,14 @@ mod tests {
         }
 
         let limits = adapter.limits();
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("WGSL vs CubeCL test device"),
-                required_features,
-                required_limits: limits.clone(),
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("WGSL vs CubeCL test device"),
+            required_features,
+            required_limits: limits.clone(),
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            memory_hints: wgpu::MemoryHints::Performance,
+            trace: wgpu::Trace::Off,
+        }))
         .ok()?;
 
         Some(GpuContext {
@@ -1088,6 +1435,121 @@ mod tests {
             queue: Arc::new(queue),
             limits,
         })
+    }
+
+    fn make_test_texture(
+        context: &GpuContext,
+        image: &DynamicImage,
+        width: u32,
+        height: u32,
+    ) -> wgpu::TextureView {
+        let image_f16 = to_rgba_f16(image);
+        let texture = context.device.create_texture_with_data(
+            &context.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("WGSL test input texture"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            TextureDataOrder::MipMajor,
+            bytemuck::cast_slice(&image_f16),
+        );
+        texture.create_view(&Default::default())
+    }
+
+    fn point(x: f32, y: f32) -> Point {
+        bytemuck::cast([x, y, 0.0, 0.0])
+    }
+
+    fn hsl(h: f32, s: f32, l: f32) -> HslColor {
+        bytemuck::cast([h, s, l, 0.0])
+    }
+
+    fn color_grade(h: f32, s: f32, l: f32) -> ColorGradeSettings {
+        bytemuck::cast([h, s, l, 0.0])
+    }
+
+    fn color_calibration(
+        shadows_tint: f32,
+        red_hue: f32,
+        red_saturation: f32,
+        green_hue: f32,
+        green_saturation: f32,
+        blue_hue: f32,
+        blue_saturation: f32,
+    ) -> ColorCalibrationSettings {
+        bytemuck::cast([
+            shadows_tint,
+            red_hue,
+            red_saturation,
+            green_hue,
+            green_saturation,
+            blue_hue,
+            blue_saturation,
+            0.0,
+        ])
+    }
+
+    fn make_mask_bitmap<F: Fn(u32, u32) -> u8>(
+        width: u32,
+        height: u32,
+        f: F,
+    ) -> ImageBuffer<Luma<u8>, Vec<u8>> {
+        let mut mask = ImageBuffer::from_pixel(width, height, Luma([0]));
+        for y in 0..height {
+            for x in 0..width {
+                mask.put_pixel(x, y, Luma([f(x, y)]));
+            }
+        }
+        mask
+    }
+
+    fn make_known_lut_cube() -> Arc<Lut> {
+        // Same deterministic 2x2x2 cube used by CubeCL LUT golden tests.
+        let data = vec![
+            0.1, 0.2, 0.3, // (0,0,0)
+            0.4, 0.5, 0.6, // (1,0,0)
+            0.3, 0.9, 0.7, // (0,1,0)
+            0.7, 0.1, 0.2, // (1,1,0)
+            0.2, 0.7, 0.4, // (0,0,1)
+            0.6, 0.3, 0.9, // (1,0,1)
+            0.8, 0.2, 0.5, // (0,1,1)
+            0.9, 0.8, 0.1, // (1,1,1)
+        ];
+        Arc::new(Lut { size: 2, data })
+    }
+
+    fn assert_mask_diff(
+        diff: cubecl_processing::ImageDiffStats,
+        width: u32,
+        height: u32,
+        max_ratio: f32,
+        max_abs: u8,
+    ) {
+        let max_mismatch = ((width * height * 4) as f32 * max_ratio).ceil() as usize;
+        assert!(
+            diff.mismatched_values <= max_mismatch,
+            "mismatch too high: {} > {} (max diff {}, mean {:.4})",
+            diff.mismatched_values,
+            max_mismatch,
+            diff.max_abs_diff,
+            diff.mean_abs_diff
+        );
+        assert!(
+            diff.max_abs_diff <= max_abs,
+            "max abs diff too high: {} > {}",
+            diff.max_abs_diff,
+            max_abs
+        );
     }
 
     #[test]
@@ -1099,9 +1561,12 @@ mod tests {
         let width = 32;
         let height = 32;
         let image = make_test_image(width, height);
-        let processor =
-            GpuProcessor::new(context.clone(), width.next_multiple_of(256), height.next_multiple_of(256))
-                .expect("Failed to create GPU processor");
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
 
         let image_f16 = to_rgba_f16(&image);
         let texture = context.device.create_texture_with_data(
@@ -1130,9 +1595,10 @@ mod tests {
             .run(&texture_view, width, height, adjustments, &[], None)
             .expect("WGSL run failed");
 
-        let cubecl_pixels = cubecl_processing::process_with_cubecl(&image, adjustments, None)
-            .expect("CubeCL run failed")
-            .pixels;
+        let cubecl_pixels =
+            cubecl_processing::process_with_cubecl(&image, adjustments, &[], None, None)
+                .expect("CubeCL run failed")
+                .pixels;
 
         let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 2);
         assert_eq!(diff.compared_values, (width * height * 4) as usize);
@@ -1145,12 +1611,15 @@ mod tests {
         let height = 8;
         let image = make_test_image(width, height);
         let mut adjustments = AllAdjustments::default();
-        adjustments.global.tonemapper_mode = 1;
+        adjustments.mask_count = 1;
+        adjustments.mask_adjustments[0].luma_noise_reduction = 150.0;
 
         let fallback_pixels = vec![13u8; (width * height * 4) as usize];
         let result = cubecl_processing::process_with_cubecl(
             &image,
             adjustments,
+            &[],
+            None,
             Some(&fallback_pixels),
         )
         .expect("CubeCL run failed");
@@ -1158,5 +1627,1031 @@ mod tests {
         assert!(result.used_wgsl_fallback);
         assert_eq!(result.pixels, fallback_pixels);
         assert!(result.fallback_reason.is_some());
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_agx_identity_adjustments() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 36;
+        let height = 28;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.tonemapper_mode = 1;
+
+        let wgsl_pixels = processor
+            .run(&texture_view, width, height, adjustments, &[], None)
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 3);
+        assert_mask_diff(diff, width, height, 0.01, 5);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_agx_highlight_rolloff() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 40;
+        let height = 32;
+        let image = make_hdr_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.tonemapper_mode = 1;
+
+        let wgsl_pixels = processor
+            .run(&texture_view, width, height, adjustments, &[], None)
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 3);
+        assert_mask_diff(diff, width, height, 0.015, 6);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_single_mask_exposure() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 48;
+        let height = 40;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mask0 = make_mask_bitmap(width, height, |x, _| if x < width / 2 { 255 } else { 0 });
+        let mut adjustments = AllAdjustments::default();
+        adjustments.mask_count = 1;
+        adjustments.mask_adjustments[0].exposure = 0.45;
+
+        let wgsl_pixels = processor
+            .run(
+                &texture_view,
+                width,
+                height,
+                adjustments,
+                &[mask0.clone()],
+                None,
+            )
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[mask0],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 3);
+        assert_mask_diff(diff, width, height, 0.01, 8);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_overlapping_masks() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 64;
+        let height = 48;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mask0 = make_mask_bitmap(
+            width,
+            height,
+            |x, _| if x < width * 2 / 3 { 220 } else { 0 },
+        );
+        let mask1 = make_mask_bitmap(width, height, |_, y| if y > height / 3 { 180 } else { 0 });
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.mask_count = 2;
+        adjustments.mask_adjustments[0].exposure = 0.4;
+        adjustments.mask_adjustments[1].exposure = -0.35;
+
+        let wgsl_pixels = processor
+            .run(
+                &texture_view,
+                width,
+                height,
+                adjustments,
+                &[mask0.clone(), mask1.clone()],
+                None,
+            )
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[mask0, mask1],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 3);
+        assert_mask_diff(diff, width, height, 0.02, 10);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_mask_atlas_like_and_curves() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 72;
+        let height = 56;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cx = (width / 2) as i32;
+        let cy = (height / 2) as i32;
+        let mask0 = make_mask_bitmap(width, height, |x, y| {
+            let dx = x as i32 - cx;
+            let dy = y as i32 - cy;
+            let d2 = dx * dx + dy * dy;
+            let outer = d2 < (width as i32 / 3).pow(2);
+            let inner = d2 < (width as i32 / 6).pow(2);
+            if outer && !inner { 255 } else { 0 }
+        });
+        let mask1 = make_mask_bitmap(width, height, |x, y| {
+            let additive =
+                (x > width / 4 && x < width * 3 / 4 && y > height / 4 && y < height * 3 / 4) as u8;
+            let subtractive =
+                (x > width / 3 && x < width * 2 / 3 && y > height / 3 && y < height * 2 / 3) as u8;
+            if additive == 1 && subtractive == 0 {
+                200
+            } else {
+                0
+            }
+        });
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.mask_count = 2;
+        adjustments.mask_adjustments[0].exposure = 0.25;
+        adjustments.mask_adjustments[1].brightness = 0.2;
+        adjustments.mask_adjustments[0].luma_curve_count = 2;
+        adjustments.mask_adjustments[0].luma_curve = [point(0.0, 0.0); 16];
+        adjustments.mask_adjustments[0].luma_curve[1] = point(255.0, 230.0);
+
+        let wgsl_pixels = processor
+            .run(
+                &texture_view,
+                width,
+                height,
+                adjustments,
+                &[mask0.clone(), mask1.clone()],
+                None,
+            )
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[mask0, mask1],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 4);
+        assert_mask_diff(diff, width, height, 0.03, 12);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_mask_local_contrast_controls() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 64;
+        let height = 64;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mask0 = make_mask_bitmap(width, height, |x, y| {
+            if x > width / 4 && x < width * 3 / 4 && y > height / 4 && y < height * 3 / 4 {
+                220
+            } else {
+                0
+            }
+        });
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.mask_count = 1;
+        adjustments.mask_adjustments[0].sharpness = 0.2;
+        adjustments.mask_adjustments[0].clarity = 0.25;
+        adjustments.mask_adjustments[0].structure = 0.15;
+
+        let wgsl_pixels = processor
+            .run(
+                &texture_view,
+                width,
+                height,
+                adjustments,
+                &[mask0.clone()],
+                None,
+            )
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[mask0],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 6);
+        assert_mask_diff(diff, width, height, 0.16, 20);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_mask_glow_halation_flare_controls() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 72;
+        let height = 56;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mask0 = make_mask_bitmap(width, height, |x, y| if (x + y) % 3 == 0 { 180 } else { 0 });
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.mask_count = 1;
+        adjustments.mask_adjustments[0].glow_amount = 0.2;
+        adjustments.mask_adjustments[0].halation_amount = 0.18;
+        adjustments.mask_adjustments[0].flare_amount = 0.15;
+
+        let wgsl_pixels = processor
+            .run(
+                &texture_view,
+                width,
+                height,
+                adjustments,
+                &[mask0.clone()],
+                None,
+            )
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[mask0],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 8);
+        assert_mask_diff(diff, width, height, 0.22, 70);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_with_3d_lut_tetrahedral() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+
+        let width = 40;
+        let height = 40;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let lut = make_known_lut_cube();
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.has_lut = 1;
+        adjustments.global.lut_intensity = 0.75;
+
+        let wgsl_pixels = processor
+            .run(
+                &texture_view,
+                width,
+                height,
+                adjustments,
+                &[],
+                Some(lut.clone()),
+            )
+            .expect("WGSL run failed");
+        let cubecl_pixels = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[],
+            Some(lut.as_ref()),
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed")
+        .pixels;
+
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_pixels, 2);
+        assert_mask_diff(diff, width, height, 0.01, 3);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_identity_curve() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 48;
+        let height = 36;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.luma_curve_count = 2;
+        adjustments.global.luma_curve = [point(0.0, 0.0); 16];
+        adjustments.global.luma_curve[1] = point(255.0, 255.0);
+
+        let wgsl_pixels = processor
+            .run(&texture_view, width, height, adjustments, &[], None)
+            .expect("WGSL run failed");
+        let cubecl_result = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed");
+        assert!(
+            !cubecl_result.used_wgsl_fallback,
+            "CubeCL unexpectedly fell back: {:?}",
+            cubecl_result.fallback_reason
+        );
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 2);
+        assert_mask_diff(diff, width, height, 0.01, 4);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_s_curve_contrast() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 56;
+        let height = 40;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.luma_curve_count = 4;
+        adjustments.global.luma_curve = [point(0.0, 0.0); 16];
+        adjustments.global.luma_curve[1] = point(64.0, 48.0);
+        adjustments.global.luma_curve[2] = point(192.0, 208.0);
+        adjustments.global.luma_curve[3] = point(255.0, 255.0);
+
+        let wgsl_pixels = processor
+            .run(&texture_view, width, height, adjustments, &[], None)
+            .expect("WGSL run failed");
+        let cubecl_result = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed");
+        assert!(
+            !cubecl_result.used_wgsl_fallback,
+            "CubeCL unexpectedly fell back: {:?}",
+            cubecl_result.fallback_reason
+        );
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 3);
+        assert_mask_diff(diff, width, height, 0.02, 8);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_rgb_split_tone_curves() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 56;
+        let height = 44;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let mut adjustments = AllAdjustments::default();
+        adjustments.global.red_curve_count = 3;
+        adjustments.global.red_curve = [point(0.0, 0.0); 16];
+        adjustments.global.red_curve[1] = point(128.0, 150.0);
+        adjustments.global.red_curve[2] = point(255.0, 255.0);
+        adjustments.global.green_curve_count = 3;
+        adjustments.global.green_curve = [point(0.0, 0.0); 16];
+        adjustments.global.green_curve[1] = point(128.0, 118.0);
+        adjustments.global.green_curve[2] = point(255.0, 245.0);
+        adjustments.global.blue_curve_count = 3;
+        adjustments.global.blue_curve = [point(0.0, 8.0); 16];
+        adjustments.global.blue_curve[1] = point(128.0, 120.0);
+        adjustments.global.blue_curve[2] = point(255.0, 240.0);
+
+        let wgsl_pixels = processor
+            .run(&texture_view, width, height, adjustments, &[], None)
+            .expect("WGSL run failed");
+        let cubecl_result = cubecl_processing::process_with_cubecl(
+            &image,
+            adjustments,
+            &[],
+            None,
+            Some(&wgsl_pixels),
+        )
+        .expect("CubeCL run failed");
+        assert!(
+            !cubecl_result.used_wgsl_fallback,
+            "CubeCL unexpectedly fell back: {:?}",
+            cubecl_result.fallback_reason
+        );
+        let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 3);
+        assert_mask_diff(diff, width, height, 0.02, 10);
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_hsl_all_hue_ranges() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 60;
+        let height = 48;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        for range_idx in 0..8usize {
+            let mut adjustments = AllAdjustments::default();
+            adjustments.global.hsl[range_idx] = hsl(0.12, 0.28, 0.15);
+
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for hue range {}: {:?}",
+                range_idx, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 3);
+            assert_mask_diff(diff, width, height, 0.03, 10);
+        }
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_color_grading_and_balance_extremes() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 64;
+        let height = 48;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cases: [(&str, AllAdjustments); 5] = [
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.color_grading_shadows = color_grade(220.0, 0.45, 0.20);
+                adj.global.color_grading_blending = 1.0;
+                adj.global.color_grading_balance = -0.6;
+                ("shadows_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.color_grading_midtones = color_grade(35.0, 0.40, 0.18);
+                adj.global.color_grading_blending = 1.0;
+                ("midtones_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.color_grading_highlights = color_grade(55.0, 0.35, 0.25);
+                adj.global.color_grading_blending = 1.0;
+                adj.global.color_grading_balance = 0.7;
+                ("highlights_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.color_grading_midtones = color_grade(20.0, 0.35, 0.10);
+                adj.global.color_grading_blending = 1.0;
+                adj.global.color_grading_balance = -1.0;
+                ("balance_extreme_negative", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.color_grading_midtones = color_grade(20.0, 0.35, 0.10);
+                adj.global.color_grading_blending = 1.0;
+                adj.global.color_grading_balance = 1.0;
+                ("balance_extreme_positive", adj)
+            },
+        ];
+
+        for (label, adjustments) in cases {
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for {}: {:?}",
+                label, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 3);
+            assert_mask_diff(diff, width, height, 0.03, 10);
+        }
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_color_calibration_controls() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 64;
+        let height = 48;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cases: [(&str, ColorCalibrationSettings); 7] = [
+            (
+                "red_hue",
+                color_calibration(0.0, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ),
+            (
+                "red_saturation",
+                color_calibration(0.0, 0.0, 0.35, 0.0, 0.0, 0.0, 0.0),
+            ),
+            (
+                "green_hue",
+                color_calibration(0.0, 0.0, 0.0, -0.22, 0.0, 0.0, 0.0),
+            ),
+            (
+                "green_saturation",
+                color_calibration(0.0, 0.0, 0.0, 0.0, -0.30, 0.0, 0.0),
+            ),
+            (
+                "blue_hue",
+                color_calibration(0.0, 0.0, 0.0, 0.0, 0.0, 0.18, 0.0),
+            ),
+            (
+                "blue_saturation",
+                color_calibration(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.32),
+            ),
+            (
+                "shadows_tint",
+                color_calibration(0.45, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            ),
+        ];
+
+        for (label, calibration) in cases {
+            let mut adjustments = AllAdjustments::default();
+            adjustments.global.color_calibration = calibration;
+
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for {}: {:?}",
+                label, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 3);
+            assert_mask_diff(diff, width, height, 0.03, 10);
+        }
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_local_contrast_and_centre_controls() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 72;
+        let height = 56;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cases: [(&str, AllAdjustments); 5] = [
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.sharpness = 0.28;
+                ("sharpness_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.clarity = 0.30;
+                ("clarity_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.structure = 0.22;
+                ("structure_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.centré = 0.26;
+                ("centre_only", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.sharpness = 0.22;
+                adj.global.clarity = 0.18;
+                adj.global.structure = 0.16;
+                adj.global.centré = 0.24;
+                ("combined", adj)
+            },
+        ];
+
+        for (label, adjustments) in cases {
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for {}: {:?}",
+                label, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 4);
+            assert_mask_diff(diff, width, height, 0.08, 22);
+        }
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_advanced_effects_bundle_controls() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 64;
+        let height = 48;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cases: [(&str, AllAdjustments); 8] = [
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.dehaze = 0.35;
+                ("dehaze_positive", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.dehaze = -0.35;
+                ("dehaze_negative", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.glow_amount = 0.28;
+                ("glow", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.halation_amount = 0.24;
+                ("halation", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.vignette_amount = -0.45;
+                adj.global.vignette_midpoint = 0.45;
+                adj.global.vignette_roundness = 0.35;
+                adj.global.vignette_feather = 0.75;
+                ("vignette_darken", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.vignette_amount = 0.32;
+                adj.global.vignette_midpoint = 0.42;
+                adj.global.vignette_roundness = 0.55;
+                adj.global.vignette_feather = 0.70;
+                ("vignette_brighten", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.grain_amount = 0.35;
+                adj.global.grain_size = 0.45;
+                adj.global.grain_roughness = 0.65;
+                ("grain", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.chromatic_aberration_red_cyan = 0.0008;
+                adj.global.chromatic_aberration_blue_yellow = -0.0008;
+                ("chromatic_aberration", adj)
+            },
+        ];
+
+        for (label, adjustments) in cases {
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for {}: {:?}",
+                label, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 8);
+            assert_mask_diff(diff, width, height, 0.20, 45);
+        }
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_global_main_tonal_color_parameter_sweep() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 56;
+        let height = 44;
+        let image = make_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cases: [(&str, AllAdjustments); 12] = [
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.brightness = 0.35;
+                ("brightness_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.contrast = -0.30;
+                ("contrast_neg", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.highlights = -0.45;
+                ("highlights_neg", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.highlights = 0.30;
+                ("highlights_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.shadows = 0.35;
+                ("shadows_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.whites = 0.28;
+                ("whites_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.blacks = -0.32;
+                ("blacks_neg", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.temperature = 0.30;
+                ("temperature_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.tint = -0.30;
+                ("tint_neg", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.saturation = 0.35;
+                ("saturation_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.vibrance = 0.35;
+                ("vibrance_pos", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.brightness = -0.25;
+                adj.global.contrast = 0.22;
+                adj.global.highlights = -0.20;
+                adj.global.shadows = 0.25;
+                adj.global.whites = 0.12;
+                adj.global.blacks = -0.15;
+                adj.global.temperature = 0.18;
+                adj.global.tint = -0.12;
+                adj.global.saturation = 0.18;
+                adj.global.vibrance = 0.16;
+                ("combined", adj)
+            },
+        ];
+
+        for (label, adjustments) in cases {
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for {}: {:?}",
+                label, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 8);
+            assert_mask_diff(diff, width, height, 0.16, 40);
+        }
+    }
+
+    #[test]
+    fn cubecl_matches_wgsl_clipping_overlay_near_thresholds() {
+        let Some(context) = test_gpu_context() else {
+            return;
+        };
+        let width = 52;
+        let height = 40;
+        let image = make_hdr_test_image(width, height);
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+
+        let cases: [(&str, AllAdjustments); 2] = [
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.show_clipping = 1;
+                adj.global.exposure = 1.8;
+                ("highlight_clip", adj)
+            },
+            {
+                let mut adj = AllAdjustments::default();
+                adj.global.show_clipping = 1;
+                adj.global.exposure = -2.2;
+                ("shadow_clip", adj)
+            },
+        ];
+
+        for (label, adjustments) in cases {
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let cubecl_result = cubecl_processing::process_with_cubecl(
+                &image,
+                adjustments,
+                &[],
+                None,
+                Some(&wgsl_pixels),
+            )
+            .expect("CubeCL run failed");
+            assert!(
+                !cubecl_result.used_wgsl_fallback,
+                "CubeCL unexpectedly fell back for {}: {:?}",
+                label, cubecl_result.fallback_reason
+            );
+            let diff = cubecl_processing::compare_images(&wgsl_pixels, &cubecl_result.pixels, 8);
+            assert_mask_diff(diff, width, height, 0.12, 30);
+        }
     }
 }

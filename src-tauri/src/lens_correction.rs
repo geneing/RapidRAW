@@ -159,7 +159,8 @@ pub struct LensDistortionParams {
 
 impl Lens {
     pub fn get_full_model_name(&self) -> String {
-        self.model.iter()
+        self.model
+            .iter()
             .find(|m| m.lang.as_deref() == Some("en"))
             .or_else(|| self.model.first())
             .map(|m| m.value.clone())
@@ -181,34 +182,67 @@ impl Lens {
     }
 
     pub fn get_maker(&self) -> String {
-        self.maker.iter()
+        self.maker
+            .iter()
             .find(|m| m.lang.as_deref() == Some("en"))
             .or_else(|| self.maker.first())
             .map(|m| m.value.clone())
             .unwrap_or_else(|| "Misc".to_string())
     }
 
-    pub fn get_distortion_params(&self, focal_length: f32, aperture: Option<f32>, distance: Option<f32>) -> Option<LensDistortionParams> {
+    pub fn get_distortion_params(
+        &self,
+        focal_length: f32,
+        aperture: Option<f32>,
+        distance: Option<f32>,
+    ) -> Option<LensDistortionParams> {
         let cal = self.calibration.as_ref()?;
 
-        let mut distortions: Vec<Distortion> = cal.elements.iter()
-            .filter_map(|e| if let CalibrationElement::Distortion(d) = e { Some(d.clone()) } else { None })
+        let mut distortions: Vec<Distortion> = cal
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let CalibrationElement::Distortion(d) = e {
+                    Some(d.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
 
-        let mut tcas: Vec<Tca> = cal.elements.iter()
-            .filter_map(|e| if let CalibrationElement::Tca(t) = e { Some(t.clone()) } else { None })
+        let mut tcas: Vec<Tca> = cal
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let CalibrationElement::Tca(t) = e {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
 
-        let mut vignettings: Vec<Vignetting> = cal.elements.iter()
-            .filter_map(|e| if let CalibrationElement::Vignetting(v) = e { Some(v.clone()) } else { None })
+        let mut vignettings: Vec<Vignetting> = cal
+            .elements
+            .iter()
+            .filter_map(|e| {
+                if let CalibrationElement::Vignetting(v) = e {
+                    Some(v.clone())
+                } else {
+                    None
+                }
+            })
             .collect();
 
         let (k1, k2, k3, model) = if distortions.is_empty() {
             (0.0, 0.0, 0.0, 0)
         } else {
             distortions.sort_by(|a, b| a.focal.partial_cmp(&b.focal).unwrap());
-            
-            if let Some(exact) = distortions.iter().find(|d| (d.focal - focal_length).abs() < 1e-5) {
+
+            if let Some(exact) = distortions
+                .iter()
+                .find(|d| (d.focal - focal_length).abs() < 1e-5)
+            {
                 extract_dist_params(exact)
             } else if focal_length < distortions[0].focal {
                 extract_dist_params(&distortions[0])
@@ -233,7 +267,7 @@ impl Lens {
                                 p1.0 + t as f64 * (p2.0 - p1.0),
                                 p1.1 + t as f64 * (p2.1 - p1.1),
                                 p1.2 + t as f64 * (p2.2 - p1.2),
-                                p1.3
+                                p1.3,
                             );
                         }
                         break;
@@ -246,38 +280,38 @@ impl Lens {
         let (tca_vr, tca_vb) = if tcas.is_empty() {
             (1.0, 1.0)
         } else {
-             tcas.sort_by(|a, b| a.focal.partial_cmp(&b.focal).unwrap());
-             
-             if let Some(exact) = tcas.iter().find(|d| (d.focal - focal_length).abs() < 1e-5) {
-                 extract_tca_params(exact)
-             } else if focal_length < tcas[0].focal {
-                 extract_tca_params(&tcas[0])
-             } else if focal_length > tcas.last().unwrap().focal {
-                 extract_tca_params(tcas.last().unwrap())
-             } else {
-                 let mut res = (1.0, 1.0);
-                 for i in 0..tcas.len() - 1 {
-                     let d1 = &tcas[i];
-                     let d2 = &tcas[i + 1];
-                     if focal_length >= d1.focal && focal_length <= d2.focal {
-                         let p1 = extract_tca_params(d1);
-                         let p2 = extract_tca_params(d2);
+            tcas.sort_by(|a, b| a.focal.partial_cmp(&b.focal).unwrap());
 
-                         let range = d2.focal - d1.focal;
-                         if range.abs() < 1e-5 {
-                             res = p1;
-                         } else {
-                             let t = (focal_length - d1.focal) / range;
-                             res = (
-                                 p1.0 + t as f64 * (p2.0 - p1.0),
-                                 p1.1 + t as f64 * (p2.1 - p1.1)
-                             );
-                         }
-                         break;
-                     }
-                 }
-                 res
-             }
+            if let Some(exact) = tcas.iter().find(|d| (d.focal - focal_length).abs() < 1e-5) {
+                extract_tca_params(exact)
+            } else if focal_length < tcas[0].focal {
+                extract_tca_params(&tcas[0])
+            } else if focal_length > tcas.last().unwrap().focal {
+                extract_tca_params(tcas.last().unwrap())
+            } else {
+                let mut res = (1.0, 1.0);
+                for i in 0..tcas.len() - 1 {
+                    let d1 = &tcas[i];
+                    let d2 = &tcas[i + 1];
+                    if focal_length >= d1.focal && focal_length <= d2.focal {
+                        let p1 = extract_tca_params(d1);
+                        let p2 = extract_tca_params(d2);
+
+                        let range = d2.focal - d1.focal;
+                        if range.abs() < 1e-5 {
+                            res = p1;
+                        } else {
+                            let t = (focal_length - d1.focal) / range;
+                            res = (
+                                p1.0 + t as f64 * (p2.0 - p1.0),
+                                p1.1 + t as f64 * (p2.1 - p1.1),
+                            );
+                        }
+                        break;
+                    }
+                }
+                res
+            }
         };
 
         let (vig_k1, vig_k2, vig_k3) = if vignettings.is_empty() {
@@ -289,37 +323,66 @@ impl Lens {
             vignettings.sort_by(|a, b| a.focal.partial_cmp(&b.focal).unwrap());
 
             let find_best_vig = |items: &[Vignetting]| -> (f64, f64, f64) {
-                 let best_aperture_item = items.iter().min_by(|a, b| {
-                     (a.aperture - target_aperture).abs().partial_cmp(&(b.aperture - target_aperture).abs()).unwrap()
-                 });
-                 if let Some(best_ap) = best_aperture_item {
-                    let candidates: Vec<&Vignetting> = items.iter().filter(|x| (x.aperture - best_ap.aperture).abs() < 0.01).collect();
+                let best_aperture_item = items.iter().min_by(|a, b| {
+                    (a.aperture - target_aperture)
+                        .abs()
+                        .partial_cmp(&(b.aperture - target_aperture).abs())
+                        .unwrap()
+                });
+                if let Some(best_ap) = best_aperture_item {
+                    let candidates: Vec<&Vignetting> = items
+                        .iter()
+                        .filter(|x| (x.aperture - best_ap.aperture).abs() < 0.01)
+                        .collect();
                     let best_dist = candidates.into_iter().min_by(|a, b| {
-                         let da = a.distance.unwrap_or(1000.0);
-                         let db = b.distance.unwrap_or(1000.0);
-                         (da - target_distance).abs().partial_cmp(&(db - target_distance).abs()).unwrap()
+                        let da = a.distance.unwrap_or(1000.0);
+                        let db = b.distance.unwrap_or(1000.0);
+                        (da - target_distance)
+                            .abs()
+                            .partial_cmp(&(db - target_distance).abs())
+                            .unwrap()
                     });
                     extract_vig_params(best_dist.unwrap_or(best_ap))
-                 } else { (0.0, 0.0, 0.0) }
+                } else {
+                    (0.0, 0.0, 0.0)
+                }
             };
 
             if focal_length <= vignettings[0].focal + 0.01 {
-                let group: Vec<Vignetting> = vignettings.iter().filter(|x| (x.focal - vignettings[0].focal).abs() < 0.01).cloned().collect();
+                let group: Vec<Vignetting> = vignettings
+                    .iter()
+                    .filter(|x| (x.focal - vignettings[0].focal).abs() < 0.01)
+                    .cloned()
+                    .collect();
                 find_best_vig(&group)
             } else if focal_length >= vignettings.last().unwrap().focal - 0.01 {
                 let last_focal = vignettings.last().unwrap().focal;
-                let group: Vec<Vignetting> = vignettings.iter().filter(|x| (x.focal - last_focal).abs() < 0.01).cloned().collect();
+                let group: Vec<Vignetting> = vignettings
+                    .iter()
+                    .filter(|x| (x.focal - last_focal).abs() < 0.01)
+                    .cloned()
+                    .collect();
                 find_best_vig(&group)
             } else {
                 let mut res = (0.0, 0.0, 0.0);
                 for i in 0..vignettings.len() - 1 {
                     let d1 = &vignettings[i];
-                    let d2 = &vignettings[i+1];
-                    if (d1.focal - d2.focal).abs() < 0.01 { continue; }
+                    let d2 = &vignettings[i + 1];
+                    if (d1.focal - d2.focal).abs() < 0.01 {
+                        continue;
+                    }
 
                     if focal_length >= d1.focal && focal_length <= d2.focal {
-                        let group1: Vec<Vignetting> = vignettings.iter().filter(|x| (x.focal - d1.focal).abs() < 0.01).cloned().collect();
-                        let group2: Vec<Vignetting> = vignettings.iter().filter(|x| (x.focal - d2.focal).abs() < 0.01).cloned().collect();
+                        let group1: Vec<Vignetting> = vignettings
+                            .iter()
+                            .filter(|x| (x.focal - d1.focal).abs() < 0.01)
+                            .cloned()
+                            .collect();
+                        let group2: Vec<Vignetting> = vignettings
+                            .iter()
+                            .filter(|x| (x.focal - d2.focal).abs() < 0.01)
+                            .cloned()
+                            .collect();
 
                         let p1 = find_best_vig(&group1);
                         let p2 = find_best_vig(&group2);
@@ -327,7 +390,7 @@ impl Lens {
                         let range = d2.focal - d1.focal;
                         if range.abs() > 0.01 {
                             let t = (focal_length - d1.focal) / range;
-                             res = (
+                            res = (
                                 p1.0 + t as f64 * (p2.0 - p1.0),
                                 p1.1 + t as f64 * (p2.1 - p1.1),
                                 p1.2 + t as f64 * (p2.2 - p1.2),
@@ -343,9 +406,15 @@ impl Lens {
         };
 
         Some(LensDistortionParams {
-            k1, k2, k3, model,
-            tca_vr, tca_vb,
-            vig_k1, vig_k2, vig_k3
+            k1,
+            k2,
+            k3,
+            model,
+            tca_vr,
+            tca_vb,
+            vig_k1,
+            vig_k2,
+            vig_k3,
         })
     }
 }
@@ -353,10 +422,10 @@ impl Lens {
 fn extract_dist_params(dist: &Distortion) -> (f64, f64, f64, u32) {
     match dist.model.as_str() {
         "poly3" | "poly5" => (
-            dist.k1.unwrap_or(0.0) as f64, 
-            dist.k2.unwrap_or(0.0) as f64, 
-            dist.k3.unwrap_or(0.0) as f64, 
-            0
+            dist.k1.unwrap_or(0.0) as f64,
+            dist.k2.unwrap_or(0.0) as f64,
+            dist.k3.unwrap_or(0.0) as f64,
+            0,
         ),
         "ptlens" => {
             let a = dist.a.unwrap_or(0.0) as f64;
@@ -404,34 +473,35 @@ pub fn load_lensfun_db(app_handle: &tauri::AppHandle) -> LensDatabase {
         let path = entry.path();
         log::info!("Processing file: {:?}", path);
         match fs::read_to_string(path) {
-            Ok(xml_content) => {
-                match quick_xml::de::from_str::<LensDatabase>(&xml_content) {
-                    Ok(mut db) => {
-                        combined_db.cameras.append(&mut db.cameras);
-                        combined_db.lenses.append(&mut db.lenses);
-                    }
-                    Err(e) => {
-                        eprintln!("\n\n[FATAL PARSE ERROR] Failed to parse Lensfun XML file {:?}: {}\n\n", path, e);
-                        log::error!("Failed to parse Lensfun XML file {:?}: {}", path, e);
-                    },
+            Ok(xml_content) => match quick_xml::de::from_str::<LensDatabase>(&xml_content) {
+                Ok(mut db) => {
+                    combined_db.cameras.append(&mut db.cameras);
+                    combined_db.lenses.append(&mut db.lenses);
                 }
-            }
+                Err(e) => {
+                    eprintln!(
+                        "\n\n[FATAL PARSE ERROR] Failed to parse Lensfun XML file {:?}: {}\n\n",
+                        path, e
+                    );
+                    log::error!("Failed to parse Lensfun XML file {:?}: {}", path, e);
+                }
+            },
             Err(e) => log::error!("Failed to read Lensfun XML file {:?}: {}", path, e),
         }
     }
 
-    log::info!("Loaded {} lenses and {} cameras from Lensfun database.", combined_db.lenses.len(), combined_db.cameras.len());
+    log::info!(
+        "Loaded {} lenses and {} cameras from Lensfun database.",
+        combined_db.lenses.len(),
+        combined_db.cameras.len()
+    );
     combined_db
 }
 
 #[tauri::command]
 pub fn get_lensfun_makers(state: State<AppState>) -> Result<Vec<String>, String> {
     if let Some(db) = &*state.lens_db.lock().unwrap() {
-        let mut makers: Vec<String> = db
-            .lenses
-            .iter()
-            .map(|lens| lens.get_maker())
-            .collect();
+        let mut makers: Vec<String> = db.lenses.iter().map(|lens| lens.get_maker()).collect();
         makers.sort_unstable();
         makers.dedup();
         Ok(makers)
@@ -441,7 +511,10 @@ pub fn get_lensfun_makers(state: State<AppState>) -> Result<Vec<String>, String>
 }
 
 #[tauri::command]
-pub fn get_lensfun_lenses_for_maker(maker: String, state: State<AppState>) -> Result<Vec<String>, String> {
+pub fn get_lensfun_lenses_for_maker(
+    maker: String,
+    state: State<AppState>,
+) -> Result<Vec<String>, String> {
     if let Some(db) = &*state.lens_db.lock().unwrap() {
         let mut models: Vec<String> = db
             .lenses
@@ -457,16 +530,27 @@ pub fn get_lensfun_lenses_for_maker(maker: String, state: State<AppState>) -> Re
 }
 
 #[tauri::command]
-pub fn autodetect_lens(maker: String, model: String, state: State<AppState>) -> Result<Option<(String, String)>, String> {
+pub fn autodetect_lens(
+    maker: String,
+    model: String,
+    state: State<AppState>,
+) -> Result<Option<(String, String)>, String> {
     let clean_maker = maker.trim().trim_matches('"').to_string();
     let clean_model = model.trim().trim_matches('"').to_string();
 
-    log::info!("Attempting to autodetect lens. Cleaned Maker: '{}', Cleaned Model: '{}'", clean_maker, clean_model);
+    log::info!(
+        "Attempting to autodetect lens. Cleaned Maker: '{}', Cleaned Model: '{}'",
+        clean_maker,
+        clean_model
+    );
 
     if let Some(db) = &*state.lens_db.lock().unwrap() {
         let matcher = fuzzy_matcher::skim::SkimMatcherV2::default().ignore_case();
 
-        log::info!("[Attempt 1] Searching for lenses from maker: '{}'", clean_maker);
+        log::info!(
+            "[Attempt 1] Searching for lenses from maker: '{}'",
+            clean_maker
+        );
 
         let lenses_from_maker: Vec<_> = db
             .lenses
@@ -478,9 +562,10 @@ pub fn autodetect_lens(maker: String, model: String, state: State<AppState>) -> 
             let best_match = lenses_from_maker
                 .into_iter()
                 .filter_map(|lens| {
-                    let lens_name = lens.get_full_model_name(); 
+                    let lens_name = lens.get_full_model_name();
                     matcher.fuzzy_match(&lens_name, &clean_model).map(|score| {
-                        let length_penalty = (lens_name.len() as i64 - clean_model.len() as i64).max(0) / 2;
+                        let length_penalty =
+                            (lens_name.len() as i64 - clean_model.len() as i64).max(0) / 2;
                         let adjusted_score = score - length_penalty;
                         (adjusted_score, lens)
                     })
@@ -494,28 +579,39 @@ pub fn autodetect_lens(maker: String, model: String, state: State<AppState>) -> 
             }
         }
 
-        log::warn!("[Attempt 1] Failed. Could not find a match for model '{}' from maker '{}'.", clean_model, clean_maker);
+        log::warn!(
+            "[Attempt 1] Failed. Could not find a match for model '{}' from maker '{}'.",
+            clean_model,
+            clean_maker
+        );
         log::info!("[Attempt 2] Falling back to searching model name against ALL lens makers.");
 
         let best_match_fallback = db
             .lenses
             .iter()
             .filter_map(|lens| {
-                matcher.fuzzy_match(&lens.get_full_model_name(), &clean_model)
+                matcher
+                    .fuzzy_match(&lens.get_full_model_name(), &clean_model)
                     .map(|score| (score, lens))
             })
             .max_by_key(|(score, _): &(i64, _)| *score)
             .map(|(score, lens)| {
-                log::info!("[Attempt 2] Found best fallback match with score {}: '{} {}'", score, lens.get_maker(), lens.get_name());
+                log::info!(
+                    "[Attempt 2] Found best fallback match with score {}: '{} {}'",
+                    score,
+                    lens.get_maker(),
+                    lens.get_name()
+                );
                 (lens.get_maker(), lens.get_name())
             });
-        
-        if best_match_fallback.is_none() {
-            log::warn!("[Attempt 2] Fallback failed. No suitable lens found in the entire database.");
-        }
-        
-        Ok(best_match_fallback)
 
+        if best_match_fallback.is_none() {
+            log::warn!(
+                "[Attempt 2] Fallback failed. No suitable lens found in the entire database."
+            );
+        }
+
+        Ok(best_match_fallback)
     } else {
         log::warn!("Lens database not loaded. Cannot perform autodetect.");
         Ok(None)
@@ -524,15 +620,19 @@ pub fn autodetect_lens(maker: String, model: String, state: State<AppState>) -> 
 
 #[tauri::command]
 pub fn get_lens_distortion_params(
-    maker: String, 
-    model: String, 
-    focal_length: f32, 
-    aperture: Option<f32>, 
-    distance: Option<f32>, 
-    state: State<AppState>
+    maker: String,
+    model: String,
+    focal_length: f32,
+    aperture: Option<f32>,
+    distance: Option<f32>,
+    state: State<AppState>,
 ) -> Result<Option<LensDistortionParams>, String> {
     if let Some(db) = &*state.lens_db.lock().unwrap() {
-        if let Some(lens) = db.lenses.iter().find(|l| l.get_maker() == maker && l.get_name() == model) {
+        if let Some(lens) = db
+            .lenses
+            .iter()
+            .find(|l| l.get_maker() == maker && l.get_name() == model)
+        {
             return Ok(lens.get_distortion_params(focal_length, aperture, distance));
         }
     }

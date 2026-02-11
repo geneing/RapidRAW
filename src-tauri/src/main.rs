@@ -4,10 +4,10 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod ai_processing;
 mod ai_connector;
-mod culling;
+mod ai_processing;
 mod cubecl_processing;
+mod culling;
 mod denoising;
 mod exif_processing;
 mod file_management;
@@ -16,30 +16,30 @@ mod gpu_processing;
 mod image_loader;
 mod image_processing;
 mod inpainting;
+mod lens_correction;
 mod lut_processing;
 mod mask_generation;
+mod negative_conversion;
 mod panorama_stitching;
 mod panorama_utils;
 mod preset_converter;
 mod raw_processing;
 mod tagging;
 mod tagging_utils;
-mod lens_correction;
-mod negative_conversion;
 
 use log;
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
+use std::io::Write;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::thread;
-use std::io::Write;
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Sender, Receiver};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 
 use base64::{Engine as _, engine::general_purpose};
 use image::codecs::jpeg::JpegEncoder;
@@ -49,7 +49,7 @@ use image::{
 };
 use imageproc::drawing::draw_line_segment_mut;
 use imageproc::edges::canny;
-use imageproc::hough::{detect_lines, LineDetectionOptions};
+use imageproc::hough::{LineDetectionOptions, detect_lines};
 use rayon::prelude::*;
 use reqwest;
 use serde::{Deserialize, Serialize};
@@ -65,18 +65,16 @@ use crate::ai_processing::{
     generate_image_embeddings, get_or_init_ai_models, run_sam_decoder, run_sky_seg_model,
     run_u2netp_model,
 };
-use crate::file_management::{
-    AppSettings, load_settings, parse_virtual_path,
-    read_file_mapped,
-};
+use crate::file_management::{AppSettings, load_settings, parse_virtual_path, read_file_mapped};
 use crate::formats::is_raw_file;
 use crate::image_loader::{
     composite_patches_on_image, load_and_composite, load_base_image_from_bytes,
 };
 use crate::image_processing::{
-    Crop, GpuContext, ImageMetadata, apply_coarse_rotation, apply_crop, apply_flip, apply_rotation,
-    get_all_adjustments_from_json, get_or_init_gpu_context, process_and_get_dynamic_image, apply_unwarp_geometry,
-    downscale_f32_image, apply_cpu_default_raw_processing, GeometryParams, warp_image_geometry, apply_geometry_warp
+    Crop, GeometryParams, GpuContext, ImageMetadata, apply_coarse_rotation,
+    apply_cpu_default_raw_processing, apply_crop, apply_flip, apply_geometry_warp, apply_rotation,
+    apply_unwarp_geometry, downscale_f32_image, get_all_adjustments_from_json,
+    get_or_init_gpu_context, process_and_get_dynamic_image, warp_image_geometry,
 };
 use crate::lut_processing::Lut;
 use crate::mask_generation::{AiPatchDefinition, MaskDefinition, generate_mask_bitmap};
@@ -136,7 +134,7 @@ pub struct AppState {
     preview_worker_tx: Mutex<Option<Sender<PreviewJob>>>,
     pub mask_cache: Mutex<HashMap<u64, GrayImage>>,
     pub patch_cache: Mutex<HashMap<String, serde_json::Value>>,
-    pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>, 
+    pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>,
     pub thumbnail_geometry_cache: Mutex<HashMap<String, (u64, DynamicImage, f32)>>,
     pub lens_db: Mutex<Option<lens_correction::LensDatabase>>,
     pub load_image_generation: Arc<AtomicUsize>,
@@ -250,12 +248,23 @@ fn apply_all_transformations(
 }
 
 const GEOMETRY_KEYS: &[&str] = &[
-    "transformDistortion", "transformVertical", "transformHorizontal",
-    "transformRotate", "transformAspect", "transformScale",
-    "transformXOffset", "transformYOffset", "lensDistortionAmount",
-    "lensVignetteAmount", "lensTcaAmount", "lensDistortionParams",
-    "lensMaker", "lensModel", "lensDistortionEnabled", 
-    "lensTcaEnabled", "lensVignetteEnabled"
+    "transformDistortion",
+    "transformVertical",
+    "transformHorizontal",
+    "transformRotate",
+    "transformAspect",
+    "transformScale",
+    "transformXOffset",
+    "transformYOffset",
+    "lensDistortionAmount",
+    "lensVignetteAmount",
+    "lensTcaAmount",
+    "lensDistortionParams",
+    "lensMaker",
+    "lensModel",
+    "lensDistortionEnabled",
+    "lensTcaEnabled",
+    "lensVignetteEnabled",
 ];
 
 pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
@@ -270,7 +279,7 @@ pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
     for key in GEOMETRY_KEYS {
         if let Some(val) = adjustments.get(key) {
             key.hash(&mut hasher);
-            val.to_string().hash(&mut hasher); 
+            val.to_string().hash(&mut hasher);
         }
     }
 
@@ -392,10 +401,19 @@ fn calculate_full_job_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
 fn hydrate_adjustments(state: &tauri::State<AppState>, adjustments: &mut serde_json::Value) {
     let mut cache = state.patch_cache.lock().unwrap();
 
-    if let Some(patches) = adjustments.get_mut("aiPatches").and_then(|v| v.as_array_mut()) {
+    if let Some(patches) = adjustments
+        .get_mut("aiPatches")
+        .and_then(|v| v.as_array_mut())
+    {
         for patch in patches {
-            let id = patch.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-            if id.is_empty() { continue; }
+            let id = patch
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if id.is_empty() {
+                continue;
+            }
 
             let has_data = patch.get("patchData").map_or(false, |v| !v.is_null());
 
@@ -413,19 +431,34 @@ fn hydrate_adjustments(state: &tauri::State<AppState>, adjustments: &mut serde_j
 
     if let Some(masks) = adjustments.get_mut("masks").and_then(|v| v.as_array_mut()) {
         for mask_container in masks {
-            if let Some(sub_masks) = mask_container.get_mut("subMasks").and_then(|v| v.as_array_mut()) {
+            if let Some(sub_masks) = mask_container
+                .get_mut("subMasks")
+                .and_then(|v| v.as_array_mut())
+            {
                 for sub_mask in sub_masks {
-                    let id = sub_mask.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-                    if id.is_empty() { continue; }
+                    let id = sub_mask
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if id.is_empty() {
+                        continue;
+                    }
 
-                    if let Some(params) = sub_mask.get_mut("parameters").and_then(|p| p.as_object_mut()) {
+                    if let Some(params) = sub_mask
+                        .get_mut("parameters")
+                        .and_then(|p| p.as_object_mut())
+                    {
                         if params.contains_key("mask_data_base64") {
                             let val = params.get("mask_data_base64").unwrap();
                             if !val.is_null() {
                                 cache.insert(id.clone(), val.clone());
                             } else {
                                 if let Some(cached_data) = cache.get(&id) {
-                                    params.insert("mask_data_base64".to_string(), cached_data.clone());
+                                    params.insert(
+                                        "mask_data_base64".to_string(),
+                                        cached_data.clone(),
+                                    );
                                 }
                             }
                         }
@@ -453,11 +486,7 @@ fn generate_transformed_preview(
     let (full_res_w, full_res_h) = transformed_full_res.dimensions();
 
     let final_preview_base = if full_res_w > final_preview_dim || full_res_h > final_preview_dim {
-        downscale_f32_image(
-            &transformed_full_res,
-            final_preview_dim,
-            final_preview_dim,
-        )
+        downscale_f32_image(&transformed_full_res, final_preview_dim, final_preview_dim)
     } else {
         transformed_full_res
     };
@@ -522,16 +551,21 @@ async fn load_image(
             return Err("Load cancelled".to_string());
         }
 
-        let result: Result<(DynamicImage, HashMap<String, String>), String> = (|| {
-            match read_file_mapped(Path::new(&path_clone)) {
+        let result: Result<(DynamicImage, HashMap<String, String>), String> =
+            (|| match read_file_mapped(Path::new(&path_clone)) {
                 Ok(mmap) => {
                     if generation_tracker.load(Ordering::SeqCst) != my_generation {
                         return Err("Load cancelled".to_string());
                     }
 
-                    let img =
-                        load_base_image_from_bytes(&mmap, &path_clone, false, highlight_compression, cancel_token.clone())
-                            .map_err(|e| e.to_string())?;
+                    let img = load_base_image_from_bytes(
+                        &mmap,
+                        &path_clone,
+                        false,
+                        highlight_compression,
+                        cancel_token.clone(),
+                    )
+                    .map_err(|e| e.to_string())?;
                     let exif = exif_processing::read_exif_data(&path_clone, &mmap);
                     Ok((img, exif))
                 }
@@ -554,14 +588,13 @@ async fn load_image(
                         &path_clone,
                         false,
                         highlight_compression,
-                        cancel_token.clone()
+                        cancel_token.clone(),
                     )
                     .map_err(|e| e.to_string())?;
                     let exif = exif_processing::read_exif_data(&path_clone, &bytes);
                     Ok((img, exif))
                 }
-            }
-        })();
+            })();
         result
     })
     .await
@@ -626,8 +659,8 @@ fn apply_watermark(
     let (base_w, base_h) = base_image.dimensions();
     let base_min_dim = base_w.min(base_h) as f32;
 
-    let watermark_scale_factor = (base_min_dim * (watermark_settings.scale / 100.0))
-        / watermark_img.width().max(1) as f32;
+    let watermark_scale_factor =
+        (base_min_dim * (watermark_settings.scale / 100.0)) / watermark_img.width().max(1) as f32;
     let new_wm_w = (watermark_img.width() as f32 * watermark_scale_factor).round() as u32;
     let new_wm_h = (watermark_img.height() as f32 * watermark_scale_factor).round() as u32;
 
@@ -667,9 +700,9 @@ fn apply_watermark(
         WatermarkAnchor::CenterLeft | WatermarkAnchor::Center | WatermarkAnchor::CenterRight => {
             (base_h as i64 - wm_h as i64) / 2
         }
-        WatermarkAnchor::BottomLeft | WatermarkAnchor::BottomCenter | WatermarkAnchor::BottomRight => {
-            base_h as i64 - wm_h as i64 - spacing_pixels
-        }
+        WatermarkAnchor::BottomLeft
+        | WatermarkAnchor::BottomCenter
+        | WatermarkAnchor::BottomRight => base_h as i64 - wm_h as i64 - spacing_pixels,
     };
 
     image::imageops::overlay(base_image, &final_watermark, x, y);
@@ -686,16 +719,16 @@ pub fn get_cached_or_generate_mask(
     crop_offset: (f32, f32),
 ) -> Option<GrayImage> {
     let mut hasher = DefaultHasher::new();
-    
+
     let def_json = serde_json::to_string(&def).unwrap_or_default();
     def_json.hash(&mut hasher);
-    
+
     width.hash(&mut hasher);
     height.hash(&mut hasher);
     scale.to_bits().hash(&mut hasher);
     crop_offset.0.to_bits().hash(&mut hasher);
     crop_offset.1.to_bits().hash(&mut hasher);
-    
+
     let key = hasher.finish();
 
     {
@@ -710,7 +743,7 @@ pub fn get_cached_or_generate_mask(
     if let Some(img) = &generated {
         let mut cache = state.mask_cache.lock().unwrap();
         if cache.len() > 50 {
-            cache.clear(); 
+            cache.clear();
         }
         cache.insert(key, img.clone());
     }
@@ -729,7 +762,10 @@ fn process_preview_job(
     let adjustments_clone = adjustments_json;
 
     let loaded_image_guard = state.original_image.lock().unwrap();
-    let loaded_image = loaded_image_guard.as_ref().ok_or("No original image loaded")?.clone();
+    let loaded_image = loaded_image_guard
+        .as_ref()
+        .ok_or("No original image loaded")?
+        .clone();
     drop(loaded_image_guard);
 
     let new_transform_hash = calculate_transform_hash(&adjustments_clone);
@@ -888,7 +924,7 @@ fn process_preview_job(
 fn start_preview_worker(app_handle: tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
     let (tx, rx): (Sender<PreviewJob>, Receiver<PreviewJob>) = mpsc::channel();
-    
+
     *state.preview_worker_tx.lock().unwrap() = Some(tx);
 
     std::thread::spawn(move || {
@@ -896,7 +932,7 @@ fn start_preview_worker(app_handle: tauri::AppHandle) {
             while let Ok(next_job) = rx.try_recv() {
                 job = next_job;
             }
-            
+
             let state = app_handle.state::<AppState>();
             if let Err(e) = process_preview_job(&app_handle, state, job) {
                 log::error!("Preview worker error: {}", e);
@@ -917,7 +953,8 @@ fn apply_adjustments(
             adjustments: js_adjustments,
             is_interactive,
         };
-        tx.send(job).map_err(|e| format!("Failed to send to preview worker: {}", e))?;
+        tx.send(job)
+            .map_err(|e| format!("Failed to send to preview worker: {}", e))?;
     }
     Ok(())
 }
@@ -958,9 +995,11 @@ fn generate_uncropped_preview(
         let orientation_steps = adjustments_clone["orientationSteps"].as_u64().unwrap_or(0) as u8;
         let coarse_rotated_image = apply_coarse_rotation(warped_image, orientation_steps);
 
-        let flip_horizontal = adjustments_clone["flipHorizontal"].as_bool().unwrap_or(false);
+        let flip_horizontal = adjustments_clone["flipHorizontal"]
+            .as_bool()
+            .unwrap_or(false);
         let flip_vertical = adjustments_clone["flipVertical"].as_bool().unwrap_or(false);
-        
+
         let flipped_image = apply_flip(coarse_rotated_image, flip_horizontal, flip_vertical);
 
         let settings = load_settings(app_handle.clone()).unwrap_or_default();
@@ -1090,13 +1129,18 @@ async fn preview_geometry_transform(
     let visual_hash = calculate_visual_hash(&loaded_image_path, &js_adjustments);
 
     let base_image_to_warp = {
-        let maybe_cached_image = state.geometry_cache.lock().unwrap().get(&visual_hash).cloned();
+        let maybe_cached_image = state
+            .geometry_cache
+            .lock()
+            .unwrap()
+            .get(&visual_hash)
+            .cloned();
 
         if let Some(cached_image) = maybe_cached_image {
             cached_image
         } else {
             let context = get_or_init_gpu_context(&state)?;
-            
+
             let original_image = {
                 let guard = state.original_image.lock().unwrap();
                 let loaded = guard.as_ref().ok_or("No image loaded")?;
@@ -1104,13 +1148,15 @@ async fn preview_geometry_transform(
             };
 
             let settings = load_settings(app_handle.clone()).unwrap_or_default();
-            let interactive_divisor = 1.5; 
+            let interactive_divisor = 1.5;
             let final_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
             let target_dim = (final_preview_dim as f32 / interactive_divisor) as u32;
 
             let preview_base = tokio::task::spawn_blocking(move || -> DynamicImage {
                 downscale_f32_image(&original_image, target_dim, target_dim)
-            }).await.map_err(|e| e.to_string())?;
+            })
+            .await
+            .map_err(|e| e.to_string())?;
 
             let mut temp_adjustments = js_adjustments.clone();
             hydrate_adjustments(&state, &mut temp_adjustments);
@@ -1123,22 +1169,18 @@ async fn preview_geometry_transform(
                 obj.insert("flipVertical".to_string(), serde_json::json!(false));
                 for key in GEOMETRY_KEYS {
                     match *key {
-                        "transformScale" |
-                        "lensDistortionAmount" | 
-                        "lensVignetteAmount" | 
-                        "lensTcaAmount" => {
+                        "transformScale"
+                        | "lensDistortionAmount"
+                        | "lensVignetteAmount"
+                        | "lensTcaAmount" => {
                             obj.insert(key.to_string(), serde_json::json!(100.0));
-                        },
-                        "lensDistortionParams" |
-                        "lensMaker" | 
-                        "lensModel" => {
+                        }
+                        "lensDistortionParams" | "lensMaker" | "lensModel" => {
                             obj.insert(key.to_string(), serde_json::Value::Null);
-                        },
-                        "lensDistortionEnabled" | 
-                        "lensTcaEnabled" | 
-                        "lensVignetteEnabled" => {
-                            obj.insert(key.to_string(), serde_json::json!(true)); 
-                        },
+                        }
+                        "lensDistortionEnabled" | "lensTcaEnabled" | "lensVignetteEnabled" => {
+                            obj.insert(key.to_string(), serde_json::json!(true));
+                        }
                         _ => {
                             obj.insert(key.to_string(), serde_json::json!(0.0));
                         }
@@ -1175,7 +1217,8 @@ async fn preview_geometry_transform(
     let final_image = tokio::task::spawn_blocking(move || -> DynamicImage {
         let mut adjusted_params = params;
 
-        if is_raw { // approximate linear vignetting correction on gamma-baked & tonemapped geometry preview
+        if is_raw {
+            // approximate linear vignetting correction on gamma-baked & tonemapped geometry preview
             adjusted_params.lens_vignette_amount *= 0.4;
         } else {
             adjusted_params.lens_vignette_amount *= 0.8;
@@ -1193,25 +1236,26 @@ async fn preview_geometry_transform(
             let gray_image = flipped_image.to_luma8();
             let mut visualization = flipped_image.to_rgba8();
             let edges = canny(&gray_image, 50.0, 100.0);
-            
+
             let min_dim = gray_image.width().min(gray_image.height());
-            
+
             let options = LineDetectionOptions {
-                vote_threshold: (min_dim as f32 * 0.24) as u32, 
+                vote_threshold: (min_dim as f32 * 0.24) as u32,
                 suppression_radius: 15,
             };
-            
+
             let lines = detect_lines(&edges, options);
 
             for line in lines {
                 let angle_deg = line.angle_in_degrees as f32;
                 let angle_norm = angle_deg % 180.0;
                 let alignment_threshold = 0.5;
-                let is_vertical = angle_norm < alignment_threshold || angle_norm > (180.0 - alignment_threshold);
+                let is_vertical =
+                    angle_norm < alignment_threshold || angle_norm > (180.0 - alignment_threshold);
                 let is_horizontal = (angle_norm - 90.0).abs() < alignment_threshold;
-                
+
                 let color = if is_vertical || is_horizontal {
-                    Rgba([0, 255, 0, 255]) 
+                    Rgba([0, 255, 0, 255])
                 } else {
                     Rgba([255, 0, 0, 255])
                 };
@@ -1222,20 +1266,15 @@ async fn preview_geometry_transform(
                 let b = theta_rad.sin();
                 let x0 = a * r;
                 let y0 = b * r;
-                
+
                 let dist = (visualization.width().max(visualization.height()) * 2) as f32;
-                
+
                 let x1 = x0 + dist * (-b);
                 let y1 = y0 + dist * (a);
                 let x2 = x0 - dist * (-b);
                 let y2 = y0 - dist * (a);
 
-                draw_line_segment_mut(
-                    &mut visualization,
-                    (x1, y1),
-                    (x2, y2),
-                    color,
-                );
+                draw_line_segment_mut(&mut visualization, (x1, y1), (x2, y2), color);
                 draw_line_segment_mut(
                     &mut visualization,
                     (x1 + a, y1 + b),
@@ -1248,12 +1287,17 @@ async fn preview_geometry_transform(
         } else {
             flipped_image
         }
-    }).await.map_err(|e| e.to_string())?;
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     let mut buf = Cursor::new(Vec::new());
-    
-    final_image.to_rgb8().write_with_encoder(JpegEncoder::new_with_quality(&mut buf, 75)).map_err(|e| e.to_string())?;
-    
+
+    final_image
+        .to_rgb8()
+        .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, 75))
+        .map_err(|e| e.to_string())?;
+
     let base64_str = general_purpose::STANDARD.encode(buf.get_ref());
     Ok(format!("data:image/jpeg;base64,{}", base64_str))
 }
@@ -1565,10 +1609,16 @@ async fn batch_export_images(
     let context = Arc::new(context);
     let progress_counter = Arc::new(AtomicUsize::new(0));
 
-    let available_cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let num_threads = (available_cores / 2).clamp(1, 4); 
-    
-    log::info!("Starting batch export. System cores: {}, Export threads: {}", available_cores, num_threads);
+    let available_cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let num_threads = (available_cores / 2).clamp(1, 4);
+
+    log::info!(
+        "Starting batch export. System cores: {}, Export threads: {}",
+        available_cores,
+        num_threads
+    );
 
     let task = tokio::spawn(async move {
         let state = app_handle.state::<AppState>();
@@ -1582,8 +1632,15 @@ async fn batch_export_images(
             .build();
 
         if let Err(e) = pool_result {
-            let _ = app_handle.emit("export-error", format!("Failed to initialize worker threads: {}", e));
-            *app_handle.state::<AppState>().export_task_handle.lock().unwrap() = None;
+            let _ = app_handle.emit(
+                "export-error",
+                format!("Failed to initialize worker threads: {}", e),
+            );
+            *app_handle
+                .state::<AppState>()
+                .export_task_handle
+                .lock()
+                .unwrap() = None;
             return;
         }
         let pool = pool_result.unwrap();
@@ -1821,7 +1878,8 @@ async fn estimate_export_size(
     let all_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
     let lut_path = adjustments_clone["lutPath"].as_str();
     let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
-    let unique_hash = calculate_full_job_hash(&loaded_image.path, &adjustments_clone).wrapping_add(1);
+    let unique_hash =
+        calculate_full_job_hash(&loaded_image.path, &adjustments_clone).wrapping_add(1);
 
     let processed_preview = process_and_get_dynamic_image(
         &context,
@@ -1946,8 +2004,10 @@ async fn estimate_batch_export_size(
     const ESTIMATE_DIM: u32 = 1280;
 
     let original_image = match read_file_mapped(Path::new(&source_path_str)) {
-        Ok(mmap) => load_base_image_from_bytes(&mmap, &source_path_str, true, highlight_compression, None)
-            .map_err(|e| e.to_string())?,
+        Ok(mmap) => {
+            load_base_image_from_bytes(&mmap, &source_path_str, true, highlight_compression, None)
+                .map_err(|e| e.to_string())?
+        }
         Err(e) => {
             log::warn!(
                 "Failed to memory-map file '{}': {}. Falling back to standard read.",
@@ -2205,7 +2265,6 @@ async fn generate_ai_subject_mask(
             }
         }
         hasher.update(&geo_hasher.finish().to_le_bytes());
-
 
         let path_hash = hasher.finalize().to_hex().to_string();
 
@@ -2483,8 +2542,10 @@ async fn invoke_generative_replace_with_mask_def(
             &real_path_str,
             &source_image,
             &mask_image_dynamic,
-            patch_definition.prompt
-        ).await.map_err(|e| e.to_string())?
+            patch_definition.prompt,
+        )
+        .await
+        .map_err(|e| e.to_string())?
     } else if let Some(auth_token) = token {
         // convenience cloud service
         let client = reqwest::Client::new();
@@ -2644,9 +2705,14 @@ async fn generate_all_community_previews(
         let (source_path, _) = parse_virtual_path(image_path);
         let source_path_str = source_path.to_string_lossy().to_string();
         let image_bytes = fs::read(&source_path).map_err(|e| e.to_string())?;
-        let original_image =
-            crate::image_loader::load_base_image_from_bytes(&image_bytes, &source_path_str, true, highlight_compression, None)
-                .map_err(|e| e.to_string())?;
+        let original_image = crate::image_loader::load_base_image_from_bytes(
+            &image_bytes,
+            &source_path_str,
+            true,
+            highlight_compression,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
         let is_raw = is_raw_file(&source_path_str);
         base_thumbnails.push((
             downscale_f32_image(&original_image, PROCESSING_DIM, PROCESSING_DIM),
@@ -2793,11 +2859,8 @@ async fn stitch_panorama(
                     ((800.0 * w as f32 / h as f32).round() as u32, 800)
                 };
 
-                let preview_f32 = crate::image_processing::downscale_f32_image(
-                    &panorama_image,
-                    new_w,
-                    new_h
-                );
+                let preview_f32 =
+                    crate::image_processing::downscale_f32_image(&panorama_image, new_w, new_h);
 
                 let preview_u8 = preview_f32.to_rgb8();
 
@@ -2858,13 +2921,20 @@ async fn save_panorama(
         .and_then(|s| s.to_str())
         .unwrap_or("panorama");
 
-    let (output_filename, image_to_save): (String, DynamicImage) = if panorama_image.color().has_alpha() {
-        (format!("{}_Pano.png", stem), DynamicImage::ImageRgba8(panorama_image.to_rgba8()))
-    } else if panorama_image.as_rgb32f().is_some() {
-        (format!("{}_Pano.tiff", stem), panorama_image)
-    } else {
-        (format!("{}_Pano.png", stem), DynamicImage::ImageRgb8(panorama_image.to_rgb8()))
-    };
+    let (output_filename, image_to_save): (String, DynamicImage) =
+        if panorama_image.color().has_alpha() {
+            (
+                format!("{}_Pano.png", stem),
+                DynamicImage::ImageRgba8(panorama_image.to_rgba8()),
+            )
+        } else if panorama_image.as_rgb32f().is_some() {
+            (format!("{}_Pano.tiff", stem), panorama_image)
+        } else {
+            (
+                format!("{}_Pano.png", stem),
+                DynamicImage::ImageRgb8(panorama_image.to_rgb8()),
+            )
+        };
 
     let output_path = parent_dir.join(output_filename);
 
@@ -2906,15 +2976,10 @@ async fn save_denoised_image(
     original_path_str: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    let denoised_image = state
-        .denoise_result
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or_else(|| {
-            "No denoised image found in memory. It might have already been saved or cleared."
-                .to_string()
-        })?;
+    let denoised_image = state.denoise_result.lock().unwrap().take().ok_or_else(|| {
+        "No denoised image found in memory. It might have already been saved or cleared."
+            .to_string()
+    })?;
 
     let is_raw = crate::formats::is_raw_file(&original_path_str);
 
@@ -2929,7 +2994,7 @@ async fn save_denoised_image(
 
     let (output_filename, image_to_save): (String, DynamicImage) = if is_raw {
         let filename = format!("{}_Denoised.tiff", stem);
-        (filename, denoised_image) 
+        (filename, denoised_image)
     } else {
         let filename = format!("{}_Denoised.png", stem);
         (filename, DynamicImage::ImageRgb8(denoised_image.to_rgb8()))
@@ -3168,11 +3233,7 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
             || "at an unknown location".to_string(),
             |loc| format!("at {}:{}:{}", loc.file(), loc.line(), loc.column()),
         );
-        log::error!(
-            "PANIC! {} - {}",
-            location,
-            message.trim()
-        );
+        log::error!("PANIC! {} - {}", location, message.trim());
     }));
 
     log::info!(
@@ -3183,10 +3244,7 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
 
 #[tauri::command]
 fn get_log_file_path(app_handle: tauri::AppHandle) -> Result<String, String> {
-    let log_dir = app_handle
-        .path()
-        .app_log_dir()
-        .map_err(|e| e.to_string())?;
+    let log_dir = app_handle.path().app_log_dir().map_err(|e| e.to_string())?;
     let log_file_path = log_dir.join("app.log");
     Ok(log_file_path.to_string_lossy().to_string())
 }
@@ -3200,9 +3258,15 @@ fn handle_file_open(app_handle: &tauri::AppHandle, path: PathBuf) {
 }
 
 #[tauri::command]
-fn frontend_ready(app_handle: tauri::AppHandle, state: tauri::State<AppState>) -> Result<(), String> {
+fn frontend_ready(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
     if let Some(path) = state.initial_file_path.lock().unwrap().take() {
-        log::info!("Frontend is ready, emitting open-with-file for initial path: {}", &path);
+        log::info!(
+            "Frontend is ready, emitting open-with-file for initial path: {}",
+            &path
+        );
         handle_file_open(&app_handle, PathBuf::from(path));
     }
     Ok(())
@@ -3211,7 +3275,10 @@ fn frontend_ready(app_handle: tauri::AppHandle, state: tauri::State<AppState>) -
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            log::info!("New instance launched with args: {:?}. Focusing main window.", argv);
+            log::info!(
+                "New instance launched with args: {:?}. Focusing main window.",
+                argv
+            );
             if let Some(window) = app.get_webview_window("main") {
                 if let Err(e) = window.unminimize() {
                     log::error!("Failed to unminimize window: {}", e);
@@ -3224,7 +3291,10 @@ fn main() {
             if argv.len() > 1 {
                 let path_str = &argv[1];
                 if let Err(e) = app.emit("open-with-file", path_str) {
-                    log::error!("Failed to emit open-with-file from single-instance handler: {}", e);
+                    log::error!(
+                        "Failed to emit open-with-file from single-instance handler: {}",
+                        e
+                    );
                 }
             }
         }))
@@ -3237,9 +3307,12 @@ fn main() {
             #[cfg(any(windows, target_os = "linux"))]
             {
                 if let Some(arg) = std::env::args().nth(1) {
-                     let state = app.state::<AppState>();
-                     log::info!("Windows/Linux initial open: Storing path {} for later.", &arg);
-                     *state.initial_file_path.lock().unwrap() = Some(arg);
+                    let state = app.state::<AppState>();
+                    log::info!(
+                        "Windows/Linux initial open: Storing path {} for later.",
+                        &arg
+                    );
+                    *state.initial_file_path.lock().unwrap() = Some(arg);
                 }
             }
 
@@ -3272,9 +3345,18 @@ fn main() {
                     .expect("failed to resolve resource directory");
 
                 let ort_library_name = {
-                    #[cfg(target_os = "windows")] { "onnxruntime.dll" }
-                    #[cfg(target_os = "linux")] { "libonnxruntime.so" }
-                    #[cfg(target_os = "macos")] { "libonnxruntime.dylib" }
+                    #[cfg(target_os = "windows")]
+                    {
+                        "onnxruntime.dll"
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        "libonnxruntime.so"
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        "libonnxruntime.dylib"
+                    }
                 };
                 let ort_library_path = resource_path.join(ort_library_name);
                 std::env::set_var("ORT_DYLIB_PATH", &ort_library_path);
@@ -3294,7 +3376,7 @@ fn main() {
                     log::info!("Applied Linux GPU optimizations.");
                 }
             }
-            
+
             start_preview_worker(app_handle.clone());
 
             let window_cfg = app.config().app.windows.get(0).unwrap().clone();
@@ -3429,16 +3511,21 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(#[allow(unused_variables)] |app_handle, event| {
-            match event {
+        .run(
+            #[allow(unused_variables)]
+            |app_handle, event| match event {
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Opened { urls } => {
                     if let Some(url) = urls.first() {
                         if let Ok(path) = url.to_file_path() {
                             if let Some(path_str) = path.to_str() {
                                 let state = app_handle.state::<AppState>();
-                                *state.initial_file_path.lock().unwrap() = Some(path_str.to_string());
-                                log::info!("macOS initial open: Stored path {} for later.", path_str);
+                                *state.initial_file_path.lock().unwrap() =
+                                    Some(path_str.to_string());
+                                log::info!(
+                                    "macOS initial open: Stored path {} for later.",
+                                    path_str
+                                );
                             }
                         }
                     }
@@ -3447,6 +3534,6 @@ fn main() {
                     std::process::exit(0);
                 }
                 _ => {}
-            }
-        });
+            },
+        );
 }

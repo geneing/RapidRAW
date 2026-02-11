@@ -46,7 +46,10 @@ pub struct MatchInfo {
     pub inliers: usize,
 }
 
-pub fn stitch_images(image_paths: Vec<String>, app_handle: AppHandle) -> Result<DynamicImage, String> {
+pub fn stitch_images(
+    image_paths: Vec<String>,
+    app_handle: AppHandle,
+) -> Result<DynamicImage, String> {
     if image_paths.len() < 2 {
         return Err("At least two images are required for a panorama.".to_string());
     }
@@ -81,9 +84,14 @@ pub fn stitch_images(image_paths: Vec<String>, app_handle: AppHandle) -> Result<
             let file_bytes = fs::read(filename)
                 .map_err(|e| format!("Failed to read image {}: {}", filename, e))?;
 
-            let mut dynamic_image =
-                crate::image_loader::load_base_image_from_bytes(&file_bytes, filename, false, 2.5, None)
-                    .map_err(|e| format!("Failed to load image {}: {}", filename, e))?;
+            let mut dynamic_image = crate::image_loader::load_base_image_from_bytes(
+                &file_bytes,
+                filename,
+                false,
+                2.5,
+                None,
+            )
+            .map_err(|e| format!("Failed to load image {}: {}", filename, e))?;
 
             if is_raw_file(filename) {
                 apply_cpu_default_raw_processing(&mut dynamic_image);

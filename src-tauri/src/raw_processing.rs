@@ -1,5 +1,5 @@
 use crate::image_processing::apply_orientation;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use image::{DynamicImage, ImageBuffer, Rgba};
 use rawler::{
     decoders::{Orientation, RawDecodeParams},
@@ -9,8 +9,8 @@ use rawler::{
     rawsource::RawSource,
 };
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 pub fn develop_raw_image(
@@ -29,7 +29,10 @@ pub fn develop_raw_image(
 }
 
 fn is_linear_raw_format(raw_image: &RawImage) -> bool {
-    matches!(raw_image.photometric, RawPhotometricInterpretation::LinearRaw)
+    matches!(
+        raw_image.photometric,
+        RawPhotometricInterpretation::LinearRaw
+    )
 }
 
 fn log_dng_info(raw_image: &RawImage) {
@@ -78,7 +81,9 @@ fn needs_srgb_ungamma(raw_image: &RawImage) -> bool {
         };
 
         if let Some(1) = reference {
-            log::debug!("Heuristic: ColorimetricReference is Scene-Referred. Data is linear. NO un-gamma.");
+            log::debug!(
+                "Heuristic: ColorimetricReference is Scene-Referred. Data is linear. NO un-gamma."
+            );
             return false;
         } else if let Some(0) = reference {
             log::debug!("Heuristic: ColorimetricReference is Output-Referred. Applying un-gamma.");
@@ -97,11 +102,15 @@ fn needs_srgb_ungamma(raw_image: &RawImage) -> bool {
     }
 
     if raw_image.bps >= 16 {
-        log::debug!("Heuristic: 16-bit (or higher) Integer data with no explicit Gamma tag. Assuming linear. NO un-gamma.");
+        log::debug!(
+            "Heuristic: 16-bit (or higher) Integer data with no explicit Gamma tag. Assuming linear. NO un-gamma."
+        );
         return false;
     }
 
-    log::debug!("Heuristic: Fallback. Low-bit-depth Integer LinearRaw with no markers. Assuming sRGB. Applying un-gamma.");
+    log::debug!(
+        "Heuristic: Fallback. Low-bit-depth Integer LinearRaw with no markers. Assuming sRGB. Applying un-gamma."
+    );
     true
 }
 

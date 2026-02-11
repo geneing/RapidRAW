@@ -9,7 +9,7 @@
   - Backend: `src-tauri/src/main.rs` (Rust, Tauri)
   - Frontend: `src/main.tsx` and `src/App.tsx` (React)
 - **Key Dependencies:**
-  - Rust: `tauri`, `wgpu`, `image`, `rayon`, `serde`, `rawler`, `ort`, `tokio`, `reqwest`, `mimalloc`
+  - Rust: `tauri`, `wgpu`, `cubecl`, `image`, `rayon`, `serde`, `rawler`, `ort`, `tokio`, `reqwest`, `mimalloc`
   - JS: `react`, `@tauri-apps/api`, `@tauri-apps/plugin-*`, `framer-motion`, `konva`, `@dnd-kit/core`, `lucide-react`, `@clerk/clerk-react`
 - **Supported Platforms:** Windows, macOS, Linux
 
@@ -20,7 +20,7 @@
   - State management (hooks, context)
   - Communicates with backend via Tauri IPC
 - **Backend (Rust/Tauri):**
-  - Image loading, processing, and export (`image_processing.rs`, `raw_processing.rs`, `gpu_processing.rs`, `image_loader.rs`)
+  - Image loading, processing, and export (`image_processing.rs`, `raw_processing.rs`, `gpu_processing.rs`, `cubecl_processing.rs`, `image_loader.rs`)
   - Mask and adjustment management (`mask_generation.rs`, `src/utils/adjustments.tsx`)
   - AI/ONNX-based features (`ai_processing.rs`, `ai_connector.rs`, `ort`)
   - File, metadata, and tagging (`file_management.rs`, `formats.rs`, `exif_processing.rs`, `tagging.rs`)
@@ -30,14 +30,6 @@
 - **External Services:**
   - Optional: AI model downloads and remote assets via HTTP
 
-## Risk Snapshot: Top 5 Maintainability and Security Risks
-
-1. **Large, Monolithic Files:** Key files (e.g., `App.tsx`, `main.rs`, `image_processing.rs`) are very large, increasing cognitive load and risk of bugs.
-2. **Complex Data Serialization:** Heavy use of `serde_json::Value` and dynamic structures for adjustments and masks can lead to runtime errors and weak type safety.
-3. **GPU and Native Code Complexity:** Use of `wgpu`, ONNX, and custom GPU code increases risk of subtle bugs, platform-specific issues, and security vulnerabilities.
-4. **Rapid API Surface Growth:** Frequent expansion of core modules (AI, panorama, denoise, inpainting, lens, negative conversion) may outpace documentation and test coverage.
-5. **Dependency Surface:** Many dependencies (Rust and JS) increase supply chain and update risks; some (e.g., ONNX, wgpu) are complex and security-sensitive.
-
 ## Architecture and Modules
 
 ### Component Map
@@ -46,6 +38,7 @@
   - `main.rs`: Application entry, module orchestration, Tauri commands
   - `image_processing.rs`: Core image operations, metadata, adjustment application
   - `gpu_processing.rs`: GPU-accelerated processing (via wgpu)
+  - `cubecl_processing.rs`: Experimental/benchmark CubeCL GPU processing path, comparison, and fallback logic
   - `raw_processing.rs`: RAW file decoding (via `rawler`)
   - `image_loader.rs`: Image loading and compositing utilities
   - `mask_generation.rs`: Mask and selection logic, supports additive and subtractive submasks
@@ -71,64 +64,6 @@
 - Adjustments are passed as JSON objects (`serde_json::Value`) between frontend and backend, allowing flexible stacking and masking.
 - Masks are defined as composable structures (`MaskDefinition`, `SubMask`) with additive and subtractive logic, supporting complex selections.
 
-### Data Model
-
-- **Image Data:**
-  - Rust: `DynamicImage`, `RgbaImage`, `Rgb32FImage` (from the `image` crate)
-  - JS: Image data is not directly manipulated; adjustments and masks are sent to the backend for processing
-- **Metadata:**
-  - `ImageMetadata` struct (Rust): version, rating, adjustments (as JSON), tags
-- **Masks:**
-  - `MaskDefinition` (Rust/TS): id, name, visible, invert, opacity, adjustments, sub_masks
-  - `SubMask`: id, type, visible, mode (additive or subtractive), parameters
-- **Adjustments:**
-  - Enum-based (TS): `BasicAdjustment`, `ColorAdjustment`, `DetailsAdjustment`, etc.
-  - Passed as partial objects for composability
-
----
-
-### Objects for Image Data
-
-**Rust Backend:**
-- The primary image data objects are from the `image` crate:
-  - `DynamicImage`: Used for generic image operations and conversions between formats.
-  - `RgbaImage`: Stores 8-bit RGBA pixel data, used for display and export.
-  - `Rgb32FImage`: Stores 32-bit floating-point RGB data, used for high-precision processing and GPU operations.
-- Additional types:
-  - `GrayImage`, `Luma`, and custom buffer types for masks and intermediate results.
-- GPU processing uses custom wrappers and `wgpu` textures for efficient parallel computation.
-- RAW decoding uses `RawImage` and related types from the `rawler` crate, with conversion to `DynamicImage` for further processing.
-
-**Frontend (TypeScript):**
-- Image data is not directly manipulated in JS/TS. Instead, the frontend manages references (file paths, IDs) and adjustment and mask objects, which are serialized and sent to the backend for processing.
-- Thumbnails and previews are handled as binary blobs or base64-encoded images received from the backend.
-
----
-
-### Color Science Implementation
-
-RapidRAW implements a modern color science pipeline inspired by Blender's AgX and darktable:
-
-- **Tone Mapping:**
-  - Supports both "Basic" and "AgX" tone mappers, selectable in the UI.
-  - AgX is a filmic-like tone mapping curve designed for perceptual accuracy and pleasing rolloff in highlights and shadows.
-  - Tone mapping is implemented in both CPU (Rust) and GPU (WGSL shaders) code paths.
-
-- **Color Adjustments:**
-  - Modular adjustment stack includes exposure, contrast, white balance, HSL, color grading, and LUTs.
-  - Color operations are performed in linear RGB or perceptual spaces as appropriate.
-  - LUT support allows for creative looks and film emulation.
-
-- **Color Management:**
-  - Internal processing is performed in high bit-depth (32F) linear RGB.
-  - Output is converted to sRGB or display-referred color spaces for export and preview.
-  - EXIF and metadata parsing (via `kamadak-exif`, `little_exif`) is used to extract white balance and camera color data.
-
-- **Implementation Details:**
-  - Color science logic is split between Rust (core processing, metadata) and GPU shaders (real-time preview, fast transforms).
-  - The frontend exposes color controls and visualizations, but all color math is performed in the backend for accuracy and performance.
-
----
 
 ### Testing Infrastructure
 
@@ -137,10 +72,6 @@ RapidRAW implements a modern color science pipeline inspired by Blender's AgX an
 - Key modules (e.g., `image_processing.rs`, `raw_processing.rs`, `mask_generation.rs`) include test functions for core algorithms and edge cases.
 - Tests cover image loading, adjustment application, mask logic, and file I/O.
 - Build and release workflows exist, but CI coverage for tests is not confirmed here.
-
-**Frontend (TypeScript):**
-- No explicit test files or frameworks (e.g., Jest, React Testing Library) were observed in the top-level `package.json` scripts.
-- Testing is likely manual or ad hoc, with reliance on type safety and runtime validation.
 
 **Summary:**
 - The backend has basic automated test coverage for core logic, but the frontend lacks formal automated testing.
@@ -158,7 +89,150 @@ RapidRAW employs several large-scale architectural optimizations to maximize ima
 - **GPU Acceleration:**
   - The core image pipeline leverages `wgpu` for GPU-accelerated processing.
   - Custom WGSL shaders are used for fast, parallelizable operations (e.g., exposure, curves, LUTs, masking).
+  - A parallel CubeCL compute path exists for shader-porting/benchmark work and can be enabled for comparison or preferred output.
   - GPU context management is handled via a global context, with device and queue reuse to avoid costly reinitialization.
+
+### CubeCL Implementation (Current State)
+
+- **Status:**
+  - CubeCL is integrated as an additional GPU path in the Rust backend, focused on parity testing and performance benchmarking against WGSL.
+  - Implementation lives in `src-tauri/src/cubecl_processing.rs` and is invoked from `src-tauri/src/gpu_processing.rs`.
+- **Runtime Modes:**
+  - `RAPIDRAW_CUBECL_MODE=off|benchmark|cubecl` controls behavior.
+  - `off`: WGSL-only execution.
+  - `benchmark`: Run WGSL + CubeCL, log timings and pixel diff, keep WGSL output.
+  - `cubecl`: Prefer CubeCL output when CubeCL successfully executes.
+- **Timing and Comparison Logging:**
+  - Compare logs include WGSL duration, CubeCL total duration, CubeCL stage durations (threshold/blur/main), and mismatch metrics (count, max diff, mean diff).
+  - Tolerance is controlled by `RAPIDRAW_CUBECL_MATCH_TOLERANCE`.
+- **Parity and Fallback:**
+  - Current CubeCL coverage includes a subset of blur and flare processing kernels plus simplified main compositing.
+  - For unsupported adjustment sets, CubeCL returns WGSL fallback output (when provided) and records fallback reason; this preserves correctness during incremental porting.
+  - Full parity with `shader.wgsl` (masks, LUT, AgX, curves, HSL, color grading, vignette/grain, etc.) is not complete.
+- **Testing:**
+  - Unit tests verify identity tolerance matching and fallback behavior in `gpu_processing.rs`.
+  - CubeCL path is currently intended for controlled benchmarking/verification rather than default production rendering.
+
+### CubeCL Unsupported Controls and TODO Playbooks
+
+Below is the actionable implementation backlog for CubeCL parity with WGSL. Each item includes a step-by-step plan suitable for another LLM.
+
+
+4. **Curves (global + per-mask, luma + RGB channels)**
+   - **Current state:** Not implemented. CubeCL bails out when any curve count is non-zero.
+   - **TODO plan:**
+     - Port point interpolation helpers:
+       - `interpolate_cubic_hermite`
+       - `apply_curve`
+       - `is_default_curve`
+       - `apply_all_curves`.
+     - Match WGSL default-curve optimization behavior.
+     - Apply global curves after tonemap and before LUT.
+     - Apply per-mask curves after global curves with mask influence blending.
+     - Remove/relax curve gate in `unsupported_reason`.
+     - Add tests for:
+       - Identity curve.
+       - S-curve contrast.
+       - RGB-only split tone curves.
+
+5. **HSL panel**
+   - **Current state:** Not implemented in CubeCL pipeline; currently should be treated as unsupported.
+   - **TODO plan:**
+     - Add explicit HSL non-default detection in `unsupported_reason` first (safety).
+     - Port HSL helpers from WGSL:
+       - `rgb_to_hsv`, `hsv_to_rgb`, `get_raw_hsl_influence`, range definitions.
+     - Port `apply_hsl_panel` exactly, including gray short-circuit and influence normalization.
+     - Apply HSL at the same order inside global and mask adjustment stacks.
+     - Remove the HSL gate after implementation and validation.
+     - Add tests per hue range (reds/oranges/…/magentas) with tolerance checks.
+
+6. **Color grading (shadows/midtones/highlights + blending + balance)**
+   - **Current state:** Not implemented. CubeCL bails out when color grading values are non-default.
+   - **TODO plan:**
+     - Port `apply_color_grading` from WGSL.
+     - Preserve crossover, feather, and mask math exactly.
+     - Reuse HSV helper and tint application behavior.
+     - Integrate into global and mask adjustment functions in the same stage order as WGSL.
+     - Remove/relax color grading gate in `unsupported_reason`.
+     - Add tests for isolated shadows/midtones/highlights and balance extremes.
+
+7. **Color calibration**
+   - **Current state:** Not implemented. CubeCL bails out when calibration values are non-default.
+   - **TODO plan:**
+     - Port `apply_color_calibration` (hue matrix, channel masks, saturation mix, shadows tint).
+     - Match numerical safeguards (`max`, epsilon usage).
+     - Insert at the same pipeline point as WGSL (before HSL/color grading/creative color).
+     - Remove/relax calibration gate in `unsupported_reason`.
+     - Add tests for each channel’s hue/saturation controls and shadows tint.
+
+8. **Local contrast blur path (sharpness, clarity, structure, centre local contrast)**
+   - **Current state:** Not implemented. CubeCL bails out if `sharpness/clarity/structure` are non-zero.
+   - **TODO plan:**
+     - Port `apply_local_contrast`, `apply_centre_local_contrast`, and `apply_centre_tonal_and_color`.
+     - Implement separate blur buffers equivalent to WGSL:
+       - sharpness blur radius scaling
+       - clarity blur radius scaling
+       - structure blur radius scaling.
+     - Match raw vs non-raw handling and mode-specific dampening.
+     - Integrate centre control into tonal/color path and local contrast path.
+     - Remove/relax local contrast gate in `unsupported_reason`.
+     - Add tests for each control independently and combined.
+
+9. **Advanced effects bundle**
+   - **Current state:** Grouped as unsupported (`dehaze`, `glow`, `halation`, `vignette`, `grain`, chromatic aberration).
+   - **TODO plan (common):**
+     - Split the current single gate into per-effect gates for incremental rollout.
+     - Port one effect at a time and validate before enabling the next.
+   - **Per-effect step plan:**
+     - `dehaze`:
+       - Port `apply_dehaze`.
+       - Validate with haze-heavy images and negative values.
+     - `glow`:
+       - Port `apply_glow_bloom`.
+       - Ensure blurred source matches WGSL source texture and stage ordering.
+     - `halation`:
+       - Port `apply_halation`.
+       - Validate highlight-only behavior and red fringe tint response.
+     - `vignette`:
+       - Port vignette geometry math (midpoint, roundness, feather, aspect compensation).
+       - Validate darken and brighten branches (`vignette_amount < 0` vs `> 0`).
+     - `grain`:
+       - Port `hash`, `gradient_noise`, and grain blend logic.
+       - Ensure deterministic output for stable tests.
+     - `chromatic aberration`:
+       - Port `apply_ca_correction` sampling offsets and channel recombine.
+       - Validate edge cases near borders.
+
+10. **Main tonal/color controls parity (brightness/contrast/highlights/shadows/whites/blacks/temperature/tint/saturation/vibrance)**
+   - **Current state:** Partially implemented; currently gated as unsupported for non-zero values.
+   - **TODO plan:**
+     - Port WGSL equivalents exactly:
+       - `apply_white_balance`
+       - `apply_filmic_exposure`
+       - `apply_tonal_adjustments`
+       - `apply_highlights_adjustment`
+       - `apply_creative_color`.
+     - Verify operation order in global and mask paths.
+     - Validate non-raw and raw branches separately.
+     - Remove/relax this gate only after all above controls pass parity thresholds.
+     - Add parameter sweep tests over positive/negative ranges for each control.
+
+11. **Clipping overlay**
+   - **Current state:** Not implemented. CubeCL bails out when `show_clipping != 0`.
+   - **TODO plan:**
+     - Port highlight/shadow clipping logic and warning colors from WGSL.
+     - Apply at final RGB stage after vignette/grain and before final store (matching WGSL).
+     - Remove/relax clipping gate in `unsupported_reason`.
+     - Add tests for near-threshold edge values.
+
+12. **Parity roll-out and safety process (cross-cutting TODO)**
+   - Keep fallback enabled by default while any unsupported gate remains.
+   - Introduce one feature flag per control to allow staged enablement.
+   - After each control:
+     - run WGSL-vs-CubeCL diff tests on small synthetic images and real RAW-derived previews,
+     - log mismatch rate and max/mean diffs,
+     - only then relax the corresponding gate.
+   - Add/maintain a parity dashboard note in logs (per control enabled/disabled).
 
 - **Hybrid Processing Pipeline:**
   - The architecture allows dynamic selection between CPU and GPU code paths depending on operation type, image size, and hardware capabilities.
@@ -204,6 +278,7 @@ These strategies collectively enable RapidRAW to deliver real-time feedback and 
   - `package.json`
   - `src-tauri/src/main.rs` (lines 1-120)
   - `src-tauri/src/gpu_processing.rs` (lines 1-160)
+  - `src-tauri/src/cubecl_processing.rs`
   - `src/App.tsx` (lines 1-120)
 
 - **Dependency Map:**
@@ -212,4 +287,4 @@ These strategies collectively enable RapidRAW to deliver real-time feedback and 
 
 ---
 
-*Updated by Codex on 2026-02-07 based on local repository state.*
+*Updated by Codex on 2026-02-09 based on local repository state.*

@@ -193,9 +193,7 @@ pub async fn get_or_init_ai_models(
     )
     .await?;
 
-    let _ = ort::init()
-        .with_name("AI")
-        .commit();
+    let _ = ort::init().with_name("AI").commit();
 
     let mut clip_model = None;
     let mut clip_tokenizer = None;
@@ -220,7 +218,7 @@ pub async fn get_or_init_ai_models(
 
         let clip_model_path = models_dir.join(CLIP_MODEL_FILENAME);
         clip_model = Some(Mutex::new(
-            Session::builder()?.commit_from_file(clip_model_path)?
+            Session::builder()?.commit_from_file(clip_model_path)?,
         ));
         clip_tokenizer = Some(
             Tokenizer::from_file(clip_tokenizer_path)
@@ -345,7 +343,7 @@ pub fn run_sam_decoder(
         t_has_mask,
         t_orig_im_size
     ])?;
-    
+
     let mask_tensor = outputs[0].try_extract_array::<f32>()?.to_owned();
 
     let mask_dims = mask_tensor.shape();
@@ -365,7 +363,10 @@ pub fn run_sam_decoder(
     Ok(feathered_mask)
 }
 
-pub fn run_sky_seg_model(image: &DynamicImage, sky_seg_session: &Mutex<Session>) -> Result<GrayImage> {
+pub fn run_sky_seg_model(
+    image: &DynamicImage,
+    sky_seg_session: &Mutex<Session>,
+) -> Result<GrayImage> {
     let (orig_width, orig_height) = image.dimensions();
 
     let resized_image = image.resize(SKYSEG_INPUT_SIZE, SKYSEG_INPUT_SIZE, FilterType::Triangle);
@@ -438,7 +439,10 @@ pub fn run_sky_seg_model(image: &DynamicImage, sky_seg_session: &Mutex<Session>)
     Ok(final_mask)
 }
 
-pub fn run_u2netp_model(image: &DynamicImage, u2netp_session: &Mutex<Session>) -> Result<GrayImage> {
+pub fn run_u2netp_model(
+    image: &DynamicImage,
+    u2netp_session: &Mutex<Session>,
+) -> Result<GrayImage> {
     let (orig_width, orig_height) = image.dimensions();
 
     let resized_image = image.resize(U2NETP_INPUT_SIZE, U2NETP_INPUT_SIZE, FilterType::Triangle);
