@@ -12,6 +12,8 @@ use crate::lut_processing::Lut;
 static CUBECL_DEVICE: Lazy<cubecl::wgpu::WgpuDevice> = Lazy::new(cubecl::wgpu::WgpuDevice::default);
 
 const FLARE_MAP_SIZE: u32 = 512;
+const CUBECL_TILE_SIZE: u32 = 1024;
+const CUBECL_TILE_OVERLAP: u32 = 64;
 const LN_2: f32 = 0.693_147_2;
 const AGX_EPSILON: f32 = 1.0e-6;
 const AGX_MIN_EV: f32 = -15.2;
@@ -364,6 +366,10 @@ fn cubecl_main_flare_composite_kernel(
     output: &mut Array<f32>,
     width: u32,
     height: u32,
+    full_width: u32,
+    full_height: u32,
+    tile_offset_x: u32,
+    tile_offset_y: u32,
     flare_size: u32,
     flare_amount: f32,
 ) {
@@ -380,8 +386,10 @@ fn cubecl_main_flare_composite_kernel(
         let a = input[base + 3];
 
         if flare_amount > 0.0 {
-            let fx = (x * flare_size) / width;
-            let fy = (y * flare_size) / height;
+            let abs_x = x + tile_offset_x;
+            let abs_y = y + tile_offset_y;
+            let fx = (abs_x * flare_size) / full_width;
+            let fy = (abs_y * flare_size) / full_height;
             let flare_base = (fy * flare_size + fx) * 4;
 
             let mut fr = flare[flare_base] * 1.4;
@@ -770,6 +778,149 @@ fn run_copy_kernel(client: &ComputeClient<cubecl::wgpu::WgpuServer>, input: &[f3
     out.to_vec()
 }
 
+fn extract_rgba_tile(
+    src: &[f32],
+    width: u32,
+    height: u32,
+    x_start: u32,
+    y_start: u32,
+    tile_width: u32,
+    tile_height: u32,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; (tile_width * tile_height * 4) as usize];
+    for row in 0..tile_height {
+        let src_y = y_start + row;
+        if src_y >= height {
+            break;
+        }
+        let src_base = ((src_y * width + x_start) * 4) as usize;
+        let dst_base = (row * tile_width * 4) as usize;
+        let copy_values = (tile_width * 4) as usize;
+        out[dst_base..dst_base + copy_values].copy_from_slice(&src[src_base..src_base + copy_values]);
+    }
+    out
+}
+
+fn run_copy_kernel_tiled(
+    client: &ComputeClient<cubecl::wgpu::WgpuServer>,
+    input: &[f32],
+    width: u32,
+    height: u32,
+) -> Vec<f32> {
+    let mut final_output = vec![0.0f32; (width * height * 4) as usize];
+    let tiles_x = (width + CUBECL_TILE_SIZE - 1) / CUBECL_TILE_SIZE;
+    let tiles_y = (height + CUBECL_TILE_SIZE - 1) / CUBECL_TILE_SIZE;
+
+    for tile_y in 0..tiles_y {
+        for tile_x in 0..tiles_x {
+            let x_start = tile_x * CUBECL_TILE_SIZE;
+            let y_start = tile_y * CUBECL_TILE_SIZE;
+            let tile_width = std::cmp::min(width - x_start, CUBECL_TILE_SIZE);
+            let tile_height = std::cmp::min(height - y_start, CUBECL_TILE_SIZE);
+
+            let input_x_start = std::cmp::max(x_start as i32 - CUBECL_TILE_OVERLAP as i32, 0) as u32;
+            let input_y_start = std::cmp::max(y_start as i32 - CUBECL_TILE_OVERLAP as i32, 0) as u32;
+            let input_x_end = std::cmp::min(x_start + tile_width + CUBECL_TILE_OVERLAP, width);
+            let input_y_end = std::cmp::min(y_start + tile_height + CUBECL_TILE_OVERLAP, height);
+            let input_width = input_x_end - input_x_start;
+            let input_height = input_y_end - input_y_start;
+
+            let tile_input = extract_rgba_tile(
+                input,
+                width,
+                height,
+                input_x_start,
+                input_y_start,
+                input_width,
+                input_height,
+            );
+            let tile_output = run_copy_kernel(client, &tile_input);
+
+            let crop_x_start = x_start - input_x_start;
+            let crop_y_start = y_start - input_y_start;
+
+            for row in 0..tile_height {
+                let final_y = y_start + row;
+                let final_row_offset = (final_y * width + x_start) as usize * 4;
+                let source_y = crop_y_start + row;
+                let source_row_offset = (source_y * input_width + crop_x_start) as usize * 4;
+                let copy_values = (tile_width * 4) as usize;
+                final_output[final_row_offset..final_row_offset + copy_values]
+                    .copy_from_slice(&tile_output[source_row_offset..source_row_offset + copy_values]);
+            }
+        }
+    }
+
+    final_output
+}
+
+fn run_main_flare_composite_kernel_tiled(
+    client: &ComputeClient<cubecl::wgpu::WgpuServer>,
+    input: &[f32],
+    flare: Option<&[f32]>,
+    width: u32,
+    height: u32,
+    flare_amount: f32,
+) -> Vec<f32> {
+    let mut final_output = vec![0.0f32; (width * height * 4) as usize];
+    let tiles_x = (width + CUBECL_TILE_SIZE - 1) / CUBECL_TILE_SIZE;
+    let tiles_y = (height + CUBECL_TILE_SIZE - 1) / CUBECL_TILE_SIZE;
+
+    for tile_y in 0..tiles_y {
+        for tile_x in 0..tiles_x {
+            let x_start = tile_x * CUBECL_TILE_SIZE;
+            let y_start = tile_y * CUBECL_TILE_SIZE;
+            let tile_width = std::cmp::min(width - x_start, CUBECL_TILE_SIZE);
+            let tile_height = std::cmp::min(height - y_start, CUBECL_TILE_SIZE);
+
+            let input_x_start = std::cmp::max(x_start as i32 - CUBECL_TILE_OVERLAP as i32, 0) as u32;
+            let input_y_start = std::cmp::max(y_start as i32 - CUBECL_TILE_OVERLAP as i32, 0) as u32;
+            let input_x_end = std::cmp::min(x_start + tile_width + CUBECL_TILE_OVERLAP, width);
+            let input_y_end = std::cmp::min(y_start + tile_height + CUBECL_TILE_OVERLAP, height);
+            let input_width = input_x_end - input_x_start;
+            let input_height = input_y_end - input_y_start;
+
+            let tile_input = extract_rgba_tile(
+                input,
+                width,
+                height,
+                input_x_start,
+                input_y_start,
+                input_width,
+                input_height,
+            );
+
+            let tile_output = run_main_flare_composite_kernel(
+                client,
+                &tile_input,
+                flare,
+                input_width,
+                input_height,
+                width,
+                height,
+                input_x_start,
+                input_y_start,
+                flare_amount,
+            );
+
+            let crop_x_start = x_start - input_x_start;
+            let crop_y_start = y_start - input_y_start;
+
+            for row in 0..tile_height {
+                let final_y = y_start + row;
+                let final_row_offset = (final_y * width + x_start) as usize * 4;
+                let source_y = crop_y_start + row;
+                let source_row_offset = (source_y * input_width + crop_x_start) as usize * 4;
+                let copy_values = (tile_width * 4) as usize;
+                final_output[final_row_offset..final_row_offset + copy_values]
+                    .copy_from_slice(&tile_output[source_row_offset..source_row_offset + copy_values]);
+            }
+        }
+    }
+
+    final_output
+}
+
 fn run_gaussian_blur_kernel(
     client: &ComputeClient<cubecl::wgpu::WgpuServer>,
     input: &[f32],
@@ -857,6 +1008,10 @@ fn run_main_flare_composite_kernel(
     flare: Option<&[f32]>,
     width: u32,
     height: u32,
+    full_width: u32,
+    full_height: u32,
+    tile_offset_x: u32,
+    tile_offset_y: u32,
     flare_amount: f32,
 ) -> Vec<f32> {
     let pixel_count = (width * height) as usize;
@@ -882,6 +1037,10 @@ fn run_main_flare_composite_kernel(
             ArrayArg::from_raw_parts::<f32>(&output_handle, values, 1),
             ScalarArg::new(width),
             ScalarArg::new(height),
+            ScalarArg::new(full_width),
+            ScalarArg::new(full_height),
+            ScalarArg::new(tile_offset_x),
+            ScalarArg::new(tile_offset_y),
             ScalarArg::new(FLARE_MAP_SIZE),
             ScalarArg::new(flare_amount),
         );
@@ -3240,18 +3399,18 @@ pub fn process_with_cubecl(
 
     let main_start = Instant::now();
     let mut output = if needs_cpu_blend_path {
-        run_copy_kernel(&client, input)
+        run_copy_kernel_tiled(&client, input, width, height)
     } else if let Some(flare_map) = flare_map.as_ref() {
-        run_main_flare_composite_kernel(
+        run_main_flare_composite_kernel_tiled(
             &client,
             input,
             Some(flare_map),
             width,
             height,
-            all_adjustments.global.flare_amount,
+            all_adjustments.global.flare_amount
         )
     } else {
-        run_copy_kernel(&client, input)
+        run_copy_kernel_tiled(&client, input, width, height)
     };
     let main_time = main_start.elapsed();
     let mut mask_stats = MaskCompositeStats::default();

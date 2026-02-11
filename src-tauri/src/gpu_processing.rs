@@ -1372,8 +1372,11 @@ pub fn process_and_get_dynamic_image(
 mod tests {
     use super::*;
     use crate::cubecl_processing;
+    use crate::image_loader::load_base_image_from_bytes;
     use crate::image_processing::{ColorCalibrationSettings, ColorGradeSettings, HslColor, Point};
     use crate::lut_processing::Lut;
+    use std::fs;
+    use std::time::Instant;
 
     fn make_test_image(width: u32, height: u32) -> DynamicImage {
         let mut img = image::RgbaImage::new(width, height);
@@ -2654,4 +2657,85 @@ mod tests {
             assert_mask_diff(diff, width, height, 0.12, 30);
         }
     }
+
+    #[test]
+    #[ignore]
+    fn bench_orf_wgsl_vs_cubecl_local() {
+        let Some(context) = test_gpu_context() else {
+            eprintln!("No GPU context available; skipping benchmark.");
+            return;
+        };
+
+        let path = r"I:\Projects\RapidRaw\Data\2025-04-14\R4141663.ORF";
+        let bytes = fs::read(path).expect("Failed to read ORF file");
+        let image = load_base_image_from_bytes(&bytes, path, false, 0.0, None)
+            .expect("Failed to decode ORF into image");
+        let (width, height) = image.dimensions();
+
+        let processor = GpuProcessor::new(
+            context.clone(),
+            width.next_multiple_of(256),
+            height.next_multiple_of(256),
+        )
+        .expect("Failed to create GPU processor");
+        let texture_view = make_test_texture(&context, &image, width, height);
+        let adjustments = AllAdjustments::default();
+
+        let mut wgsl_runs_ms = Vec::new();
+        let mut cubecl_runs_ms = Vec::new();
+        let mut last_wgsl_pixels = Vec::new();
+        let mut last_cubecl_pixels = Vec::new();
+
+        let warmup = 2;
+        let measured = 5;
+        for i in 0..(warmup + measured) {
+            let t0 = Instant::now();
+            let wgsl_pixels = processor
+                .run(&texture_view, width, height, adjustments, &[], None)
+                .expect("WGSL run failed");
+            let wgsl_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+            let t1 = Instant::now();
+            let cubecl_result =
+                cubecl_processing::process_with_cubecl(&image, adjustments, &[], None, None)
+                    .expect("CubeCL run failed");
+            let cubecl_ms = t1.elapsed().as_secs_f64() * 1000.0;
+
+            if i >= warmup {
+                wgsl_runs_ms.push(wgsl_ms);
+                cubecl_runs_ms.push(cubecl_ms);
+            }
+            last_wgsl_pixels = wgsl_pixels;
+            last_cubecl_pixels = cubecl_result.pixels;
+        }
+
+        let diff = cubecl_processing::compare_images(&last_wgsl_pixels, &last_cubecl_pixels, 2);
+        let wgsl_avg = wgsl_runs_ms.iter().sum::<f64>() / wgsl_runs_ms.len() as f64;
+        let cubecl_avg = cubecl_runs_ms.iter().sum::<f64>() / cubecl_runs_ms.len() as f64;
+        let wgsl_min = wgsl_runs_ms
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, |a, b| a.min(b));
+        let cubecl_min = cubecl_runs_ms
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, |a, b| a.min(b));
+
+        println!(
+            "ORF Benchmark: {} ({}x{}) | WGSL avg/min: {:.3}/{:.3} ms | CubeCL avg/min: {:.3}/{:.3} ms | speedup(avg): {:.3}x | diff mismatches: {}/{} max:{} mean:{:.4}",
+            path,
+            width,
+            height,
+            wgsl_avg,
+            wgsl_min,
+            cubecl_avg,
+            cubecl_min,
+            wgsl_avg / cubecl_avg.max(0.000_001),
+            diff.mismatched_values,
+            diff.compared_values,
+            diff.max_abs_diff,
+            diff.mean_abs_diff
+        );
+    }
+
 }
