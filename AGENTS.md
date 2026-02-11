@@ -97,6 +97,7 @@ RapidRAW employs several large-scale architectural optimizations to maximize ima
 - **Status:**
   - CubeCL is integrated as an additional GPU path in the Rust backend, focused on parity testing and performance benchmarking against WGSL.
   - Implementation lives in `src-tauri/src/cubecl_processing.rs` and is invoked from `src-tauri/src/gpu_processing.rs`.
+  - CubeCL now includes tiled execution for full-frame copy and flare-composite stages to avoid dispatch-dimension overflow on large images.
 - **Runtime Modes:**
   - `RAPIDRAW_CUBECL_MODE=off|benchmark|cubecl` controls behavior.
   - `off`: WGSL-only execution.
@@ -105,13 +106,26 @@ RapidRAW employs several large-scale architectural optimizations to maximize ima
 - **Timing and Comparison Logging:**
   - Compare logs include WGSL duration, CubeCL total duration, CubeCL stage durations (threshold/blur/main), and mismatch metrics (count, max diff, mean diff).
   - Tolerance is controlled by `RAPIDRAW_CUBECL_MATCH_TOLERANCE`.
+  - Logs include a parity dashboard note showing per-control CubeCL feature flags (enabled/disabled) during compare runs.
 - **Parity and Fallback:**
-  - Current CubeCL coverage includes a subset of blur and flare processing kernels plus simplified main compositing.
+  - CubeCL uses a hybrid strategy: compute kernels for blur/flare stages plus a CPU parity blend path that mirrors WGSL ordering for advanced controls.
   - For unsupported adjustment sets, CubeCL returns WGSL fallback output (when provided) and records fallback reason; this preserves correctness during incremental porting.
-  - Full parity with `shader.wgsl` (masks, LUT, AgX, curves, HSL, color grading, vignette/grain, etc.) is not complete.
+  - Full parity with `shader.wgsl` is still not complete for every control path, and fallback remains enabled-by-default safety.
 - **Testing:**
-  - Unit tests verify identity tolerance matching and fallback behavior in `gpu_processing.rs`.
+  - Unit tests verify identity tolerance, fallback behavior, and parity for advanced effects, main tonal/color sweeps, and clipping overlay in `gpu_processing.rs`.
   - CubeCL path is currently intended for controlled benchmarking/verification rather than default production rendering.
+
+### CubeCL Benchmarks (Recent Local)
+
+- **Test target:** `gpu_processing::tests::bench_orf_wgsl_vs_cubecl_local` (ignored test; local-only benchmark harness)
+- **Input file:** `I:\Projects\RapidRaw\Data\2025-04-14\R4141663.ORF` (`3888x5184`)
+- **Adjustments:** `AllAdjustments::default()`
+- **Method:** 2 warmup + 5 measured runs, compare against WGSL output with tolerance=2
+- **Latest result (after tiled CubeCL flare path):**
+  - WGSL avg/min: `149.840 / 145.316 ms`
+  - CubeCL avg/min: `496.775 / 486.417 ms`
+  - Relative speed (WGSL/CubeCL): `0.302x` (WGSL faster in this benchmark)
+  - Pixel diff: mismatches `0 / 80,621,568`, max diff `1`, mean diff `0.1829`
 
 ### CubeCL Unsupported Controls and TODO Playbooks
 
@@ -179,60 +193,32 @@ Below is the actionable implementation backlog for CubeCL parity with WGSL. Each
      - Add tests for each control independently and combined.
 
 9. **Advanced effects bundle**
-   - **Current state:** Grouped as unsupported (`dehaze`, `glow`, `halation`, `vignette`, `grain`, chromatic aberration).
-   - **TODO plan (common):**
-     - Split the current single gate into per-effect gates for incremental rollout.
-     - Port one effect at a time and validate before enabling the next.
-   - **Per-effect step plan:**
-     - `dehaze`:
-       - Port `apply_dehaze`.
-       - Validate with haze-heavy images and negative values.
-     - `glow`:
-       - Port `apply_glow_bloom`.
-       - Ensure blurred source matches WGSL source texture and stage ordering.
-     - `halation`:
-       - Port `apply_halation`.
-       - Validate highlight-only behavior and red fringe tint response.
-     - `vignette`:
-       - Port vignette geometry math (midpoint, roundness, feather, aspect compensation).
-       - Validate darken and brighten branches (`vignette_amount < 0` vs `> 0`).
-     - `grain`:
-       - Port `hash`, `gradient_noise`, and grain blend logic.
-       - Ensure deterministic output for stable tests.
-     - `chromatic aberration`:
-       - Port `apply_ca_correction` sampling offsets and channel recombine.
-       - Validate edge cases near borders.
+   - **Current state:** Implemented in CubeCL parity path (`dehaze`, `glow`, `halation`, `vignette`, `grain`, chromatic aberration).
+   - **Notes:**
+     - Unsupported gating was split into per-effect checks/flags.
+     - Global and mask stage ordering is aligned with WGSL in the CPU parity blend path.
+     - Dedicated parity coverage added (`cubecl_matches_wgsl_global_advanced_effects_bundle_controls`).
 
 10. **Main tonal/color controls parity (brightness/contrast/highlights/shadows/whites/blacks/temperature/tint/saturation/vibrance)**
-   - **Current state:** Partially implemented; currently gated as unsupported for non-zero values.
-   - **TODO plan:**
-     - Port WGSL equivalents exactly:
-       - `apply_white_balance`
-       - `apply_filmic_exposure`
-       - `apply_tonal_adjustments`
-       - `apply_highlights_adjustment`
-       - `apply_creative_color`.
-     - Verify operation order in global and mask paths.
-     - Validate non-raw and raw branches separately.
-     - Remove/relax this gate only after all above controls pass parity thresholds.
-     - Add parameter sweep tests over positive/negative ranges for each control.
+   - **Current state:** Implemented in CubeCL parity path for global and mask adjustments.
+   - **Notes:**
+     - WGSL-equivalent control functions are active in the parity blend path.
+     - Operation order was aligned to WGSL.
+     - Parameter-sweep parity coverage added (`cubecl_matches_wgsl_global_main_tonal_color_parameter_sweep`).
 
 11. **Clipping overlay**
-   - **Current state:** Not implemented. CubeCL bails out when `show_clipping != 0`.
-   - **TODO plan:**
-     - Port highlight/shadow clipping logic and warning colors from WGSL.
-     - Apply at final RGB stage after vignette/grain and before final store (matching WGSL).
-     - Remove/relax clipping gate in `unsupported_reason`.
-     - Add tests for near-threshold edge values.
+   - **Current state:** Implemented in CubeCL parity path.
+   - **Notes:**
+     - Highlight/shadow clipping overlay is applied at final RGB stage (after vignette/grain).
+     - Coverage added for near-threshold behavior (`cubecl_matches_wgsl_clipping_overlay_near_thresholds`).
 
 12. **Parity roll-out and safety process (cross-cutting TODO)**
-   - Keep fallback enabled by default while any unsupported gate remains.
-   - Introduce one feature flag per control to allow staged enablement.
-   - After each control:
-     - run WGSL-vs-CubeCL diff tests on small synthetic images and real RAW-derived previews,
-     - log mismatch rate and max/mean diffs,
-     - only then relax the corresponding gate.
-   - Add/maintain a parity dashboard note in logs (per control enabled/disabled).
+   - **Implemented in current path:**
+     - Fallback remains enabled by default while unsupported controls still exist.
+     - Per-control feature flags are present for staged enablement.
+     - Compare logging includes mismatch rate/max/mean diff and parity dashboard notes.
+   - **Ongoing:**
+     - Continue expanding full-kernel parity and benchmark against additional real RAW scenes/hardware.
 
 - **Hybrid Processing Pipeline:**
   - The architecture allows dynamic selection between CPU and GPU code paths depending on operation type, image size, and hardware capabilities.
@@ -287,4 +273,4 @@ These strategies collectively enable RapidRAW to deliver real-time feedback and 
 
 ---
 
-*Updated by Codex on 2026-02-09 based on local repository state.*
+*Updated by Codex on 2026-02-11 based on local repository state.*
