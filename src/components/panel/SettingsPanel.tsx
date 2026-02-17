@@ -568,7 +568,7 @@ export default function SettingsPanel({
               onClick={onBack}
               size="icon"
               variant="ghost"
-              title="Go to Home"
+              data-tooltip="Go to Home"
             >
               <ArrowLeft />
             </Button>
@@ -764,7 +764,7 @@ export default function SettingsPanel({
                           <button
                             onClick={() => handleRemoveLens(index)}
                             className="p-2 text-text-secondary hover:text-red-400 hover:bg-bg-primary rounded-md transition-colors"
-                            title="Remove lens"
+                            data-tooltip="Remove lens"
                           >
                             <Trash2 size={16} />
                           </button>
@@ -805,7 +805,7 @@ export default function SettingsPanel({
                                   animate="visible"
                                   exit="exit"
                                   onClick={() => handleRemoveShortcut(shortcut)}
-                                  title={`Remove shortcut "${shortcut}"`}
+                                  data-tooltip={`Remove shortcut "${shortcut}"`}
                                   className="flex items-center gap-1 bg-surface text-text-primary text-sm font-medium px-2 py-1 rounded group cursor-pointer"
                                 >
                                   <span>{shortcut}</span>
@@ -840,7 +840,7 @@ export default function SettingsPanel({
                           <button
                             onClick={handleAddShortcut}
                             className="absolute right-1 top-1/2 -translate-y-1/2 p-1.5 rounded-full text-text-secondary hover:text-text-primary hover:bg-surface"
-                            title="Add shortcut"
+                            data-tooltip="Add shortcut"
                           >
                             <Plus size={18} />
                           </button>
@@ -858,7 +858,7 @@ export default function SettingsPanel({
                           icon={<Trash2 size={16} className="mr-2" />}
                           isProcessing={isClearingAiTags}
                           message={aiTagsClearMessage}
-                          title="Clear AI Tags"
+                          data-tooltip="Clear AI Tags"
                         />
                         <DataActionItem
                           buttonAction={handleClearTags}
@@ -868,7 +868,7 @@ export default function SettingsPanel({
                           icon={<Trash2 size={16} className="mr-2" />}
                           isProcessing={isClearingTags}
                           message={tagsClearMessage}
-                          title="Clear All Tags"
+                          data-tooltip="Clear All Tags"
                         />
                       </div>
                     </div>
@@ -1155,7 +1155,7 @@ export default function SettingsPanel({
                       icon={<Trash2 size={16} className="mr-2" />}
                       isProcessing={isClearing}
                       message={clearMessage}
-                      title="Clear All Sidecar Files"
+                      data-tooltip="Clear All Sidecar Files"
                     />
 
                     <DataActionItem
@@ -1165,7 +1165,7 @@ export default function SettingsPanel({
                       icon={<Trash2 size={16} className="mr-2" />}
                       isProcessing={isClearingCache}
                       message={cacheClearMessage}
-                      title="Clear Thumbnail Cache"
+                      data-tooltip="Clear Thumbnail Cache"
                     />
 
                     <DataActionItem
@@ -1187,7 +1187,7 @@ export default function SettingsPanel({
                       icon={<ExternalLinkIcon size={16} className="mr-2" />}
                       isProcessing={false}
                       message=""
-                      title="View Application Logs"
+                      data-tooltip="View Application Logs"
                     />
                   </div>
                 </div>

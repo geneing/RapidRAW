@@ -509,7 +509,7 @@ export default function MasksPanel({
         
         <div className="p-4 flex justify-between items-center flex-shrink-0 border-b border-surface h-[69px]">
             <h2 className="text-xl font-bold text-primary text-shadow-shiny">Masking</h2>
-            <button className="p-2 rounded-full hover:bg-surface transition-colors" onClick={handleResetAllMasks} title="Reset Masking">
+            <button className="p-2 rounded-full hover:bg-surface transition-colors" onClick={handleResetAllMasks} data-tooltip="Reset Masking">
                <RotateCcw size={18} />
             </button>
         </div>
@@ -719,7 +719,7 @@ function DraggableGridItem({ maskType, onClick, isDraggable, activeMaskContainer
             ref={setNodeRef} {...listeners} {...attributes} disabled={maskType.disabled} onClick={onClick}
             className={`bg-surface text-text-primary rounded-lg p-2 flex flex-col items-center justify-center gap-1.5 aspect-square transition-colors 
                 ${maskType.disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-card-active active:bg-accent/20'} ${isDragging ? 'opacity-50' : ''}`}
-            title={maskType.disabled ? 'Coming Soon' : activeMaskContainerId ? `Add ${maskType.name} to Current Mask` : `Create New ${maskType.name} Mask`}
+            data-tooltip={maskType.disabled ? 'Coming Soon' : activeMaskContainerId ? `Add ${maskType.name} to Current Mask` : `Create New ${maskType.name} Mask`}
         >
             <maskType.icon size={24} /> <span className="text-xs">{maskType.name}</span>
         </button>
@@ -975,9 +975,9 @@ function SubMaskRow({ subMask, index, totalCount, containerId, isActive, parentV
           </div>
           <span className="text-sm text-text-primary flex-1 truncate select-none">{formatMaskTypeName(subMask.type)}</span>
           <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" title={subMask.mode === SubMaskMode.Additive ? "Switch to Subtract" : "Switch to Add"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { mode: subMask.mode === SubMaskMode.Additive ? SubMaskMode.Subtractive : SubMaskMode.Additive }); }}>{subMask.mode === SubMaskMode.Additive ? <Plus size={14}/> : <Minus size={14}/>}</button>
-            <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" title={subMask.visible ? "Hide Component" : "Show Component"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { visible: !subMask.visible }); }}>{subMask.visible ? <Eye size={14}/> : <EyeOff size={14}/>}</button>
-            <button className="p-1 hover:text-red-500 text-text-secondary" title="Delete Component" onClick={(e) => { e.stopPropagation(); handleDelete(); }}><Trash2 size={14}/></button>
+            <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" data-tooltip={subMask.mode === SubMaskMode.Additive ? "Switch to Subtract" : "Switch to Add"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { mode: subMask.mode === SubMaskMode.Additive ? SubMaskMode.Subtractive : SubMaskMode.Additive }); }}>{subMask.mode === SubMaskMode.Additive ? <Plus size={14}/> : <Minus size={14}/>}</button>
+            <button className="p-1 hover:bg-bg-primary rounded text-text-secondary" data-tooltip={subMask.visible ? "Hide Component" : "Show Component"} onClick={(e) => { e.stopPropagation(); updateSubMask(subMask.id, { visible: !subMask.visible }); }}>{subMask.visible ? <Eye size={14}/> : <EyeOff size={14}/>}</button>
+            <button className="p-1 hover:text-red-500 text-text-secondary" data-tooltip="Delete Component" onClick={(e) => { e.stopPropagation(); handleDelete(); }}><Trash2 size={14}/></button>
           </div>
       </motion.div>
    );
@@ -1164,7 +1164,7 @@ function SettingsPanel({ container, activeSubMask, aiModelDownloadStatus, brushS
                             ref={presetButtonRef}
                             onClick={handlePresetSelectClick}
                             className="text-sm text-text-primary text-right select-none cursor-pointer hover:text-accent transition-colors"
-                            title="Select a preset to apply"
+                            data-tooltip="Select a preset to apply"
                         >
                             Select
                         </button>

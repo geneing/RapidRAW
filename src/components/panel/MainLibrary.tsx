@@ -365,7 +365,7 @@ function SearchInput({ indexingProgress, isIndexing, searchCriteria, setSearchCr
           }
           inputRef.current?.focus();
         }}
-        title="Search"
+        data-tooltip="Search"
       >
         <Search className="w-4 h-4" />
       </button>
@@ -435,7 +435,7 @@ function SearchInput({ indexingProgress, isIndexing, searchCriteria, setSearchCr
           <button
             onClick={toggleMode}
             className="p-1.5 rounded-md text-xs font-semibold hover:bg-bg-primary w-10 flex-shrink-0"
-            title={`Match ${mode === 'AND' ? 'ALL' : 'ANY'} tags`}
+            data-tooltip={`Match ${mode === 'AND' ? 'ALL' : 'ANY'} tags`}
           >
             {mode}
           </button>
@@ -444,7 +444,7 @@ function SearchInput({ indexingProgress, isIndexing, searchCriteria, setSearchCr
           <button
             onClick={clearSearch}
             className="p-1.5 rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-primary flex-shrink-0"
-            title="Clear search"
+            data-tooltip="Clear search"
           >
             <X className="h-5 w-5" />
           </button>
@@ -501,7 +501,7 @@ function ColorFilterOptions({ filterCriteria, setFilterCriteria }: FilterOptionP
           return (
             <button
               key={color.name}
-              title={title}
+              data-tooltip={title}
               onClick={(e: any) => handleColorClick(color.name, e)}
               className="w-6 h-6 rounded-full focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-surface transition-transform hover:scale-110"
               role="menuitem"
@@ -543,7 +543,7 @@ function DropdownMenu({ buttonContent, buttonTitle, children, contentClassName =
         aria-haspopup="true"
         className="h-12 w-12 bg-surface text-text-primary shadow-none p-0 flex items-center justify-center"
         onClick={() => setIsOpen(!isOpen)}
-        title={buttonTitle}
+        data-tooltip={buttonTitle}
       >
         {buttonContent}
       </Button>
@@ -701,7 +701,7 @@ function SortOptions({ sortCriteria, setSortCriteria, sortOptions }: SortOptions
         <div className="text-xs font-semibold text-text-secondary uppercase">Sort by</div>
         <button
           onClick={handleOrderToggle}
-          title={`Sort ${sortCriteria.order === SortDirection.Ascending ? 'Descending' : 'Ascending'}`}
+          data-tooltip={`Sort ${sortCriteria.order === SortDirection.Ascending ? 'Descending' : 'Ascending'}`}
           className="absolute top-1/2 right-3 -translate-y-1/2 p-1 bg-transparent border-none text-text-secondary hover:text-text-primary focus:outline-none focus:ring-1 focus:ring-accent rounded"
         >
           {sortCriteria.order === SortDirection.Ascending ? (
@@ -746,7 +746,7 @@ function SortOptions({ sortCriteria, setSortCriteria, sortOptions }: SortOptions
             onClick={() => !option.disabled && handleKeyChange(option.key)}
             role="menuitem"
             disabled={option.disabled}
-            title={option.disabled ? 'Enable EXIF Reading in Settings to use this option.' : undefined}
+            data-tooltip={option.disabled ? 'Enable EXIF Reading in Settings to use this option.' : undefined}
           >
             <span>{option.label}</span>
             {isSelected && <Check size={16} />}
@@ -987,7 +987,7 @@ function Thumbnail({
             <div
               className="w-3 h-3 rounded-full ring-1 ring-black/20"
               style={{ backgroundColor: colorLabel.color }}
-              title={`Color: ${colorLabel.name}`}
+              data-tooltip={`Color: ${colorLabel.name}`}
             ></div>
           )}
           {rating > 0 && (
@@ -1003,7 +1003,7 @@ function Thumbnail({
         {isVirtualCopy && (
           <div
             className="flex-shrink-0 bg-bg-primary/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full backdrop-blur-sm"
-            title="Virtual Copy"
+            data-tooltip="Virtual Copy"
           >
             VC
           </div>
@@ -1059,7 +1059,7 @@ const Row = ({ index, style, data }: any) => {
       >
         <div className="flex items-center gap-2 w-full border-b border-border-color pb-1">
           <FolderOpen size={16} className="text-text-secondary" />
-          <span className="text-sm font-semibold text-text-secondary truncate" title={row.path}>
+          <span className="text-sm font-semibold text-text-secondary truncate" data-tooltip={row.path}>
             {displayPath}
           </span>
           <span className="text-xs text-text-secondary opacity-60 ml-auto">{row.count} images</span>
@@ -1462,7 +1462,7 @@ export default function MainLibrary({
                       className="px-3 bg-surface text-text-primary shadow-none h-11"
                       onClick={() => setShowSettings(true)}
                       size="lg"
-                      title="Go to Settings"
+                      data-tooltip="Go to Settings"
                       variant="ghost"
                     >
                       <Settings size={20} />
@@ -1496,7 +1496,7 @@ export default function MainLibrary({
                             open('https://github.com/CyberTimon/RapidRAW/releases/latest');
                           }
                         }}
-                        title={
+                        data-tooltip={
                           isUpdateAvailable
                             ? `Click to download version ${latestVersion}`
                             : `You are on the latest version`
@@ -1600,21 +1600,21 @@ export default function MainLibrary({
           <Button
             className="h-12 w-12 bg-surface text-text-primary shadow-none p-0 flex items-center justify-center"
             onClick={onNavigateToCommunity}
-            title="Community Presets"
+            data-tooltip="Community Presets"
           >
             <Users className="w-8 h-8" />
           </Button>
           <Button
             className="h-12 w-12 bg-surface text-text-primary shadow-none p-0 flex items-center justify-center"
             onClick={onOpenFolder}
-            title="Open another folder"
+            data-tooltip="Open another folder"
           >
             <Folder className="w-8 h-8" />
           </Button>
           <Button
             className="h-12 w-12 bg-surface text-text-primary shadow-none p-0 flex items-center justify-center"
             onClick={onGoHome}
-            title="Go to Home"
+            data-tooltip="Go to Home"
           >
             <Home className="w-8 h-8" />
           </Button>

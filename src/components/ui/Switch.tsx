@@ -48,7 +48,7 @@ const Switch = ({
         className,
       )}
       htmlFor={uniqueId}
-      title={tooltip}
+      data-tooltip={tooltip}
     >
       <span className="text-sm text-text-secondary select-none">{label}</span>
       <div className="relative w-10 h-5">

@@ -208,7 +208,7 @@ const FilmstripThumbnail = memo(({
       style={{
         zIndex: isActive ? 2 : isSelected ? 1 : 'auto',
       }}
-      title={truncatedTitle}
+      data-tooltip={truncatedTitle}
     >
       {layers.length > 0 ? (
         <div className="absolute inset-0 w-full h-full">
@@ -250,7 +250,7 @@ const FilmstripThumbnail = memo(({
             <div
               className="w-3 h-3 rounded-full ring-1 ring-black/20"
               style={{ backgroundColor: colorLabel.color }}
-              title={`Color: ${colorLabel.name}`}
+              data-tooltip={`Color: ${colorLabel.name}`}
             />
           )}
           {rating > 0 && (

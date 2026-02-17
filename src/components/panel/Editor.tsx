@@ -14,6 +14,7 @@ import ImageCanvas from './editor/ImageCanvas';
 import Waveform from './editor/Waveform';
 import { Mask, SubMask } from './right/Masks';
 import { BrushSettings, Invokes, Panel, SelectedImage, TransformState, WaveformData } from '../ui/AppProperties';
+import type { OverlayMode } from './right/CropPanel';
 
 interface EditorProps {
   activeAiPatchContainerId: string | null;
@@ -67,6 +68,8 @@ interface EditorProps {
   isLoadingFullRes?: boolean;
   isWbPickerActive?: boolean;
   onWbPicked?: () => void;
+  overlayMode?: OverlayMode;
+  overlayRotation?: number;
 }
 
 export default function Editor({
@@ -120,6 +123,8 @@ export default function Editor({
   isLoadingFullRes,
   isWbPickerActive = false,
   onWbPicked,
+  overlayMode = 'none',
+  overlayRotation = 0,
 }: EditorProps) {
   const [crop, setCrop] = useState<Crop | null>(null);
   const prevCropParams = useRef<any>(null);
@@ -591,6 +596,8 @@ export default function Editor({
                 isWbPickerActive={isWbPickerActive}
                 onWbPicked={onWbPicked}
                 setAdjustments={setAdjustments}
+                overlayRotation={overlayRotation}
+                overlayMode={overlayMode}
               />
             </TransformComponent>
           </TransformWrapper>

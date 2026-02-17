@@ -823,7 +823,7 @@ export default function PresetsPanel({
             <button
               className="p-2 rounded-full hover:bg-surface transition-colors"
               onClick={onNavigateToCommunity}
-              title="Explore Community Presets"
+              data-tooltip="Explore Community Presets"
             >
               <Users size={18} />
             </button>
@@ -831,7 +831,7 @@ export default function PresetsPanel({
               className="p-2 rounded-full hover:bg-surface transition-colors"
               disabled={isLoading}
               onClick={handleImportPresets}
-              title="Import presets from .rrpreset file"
+              data-tooltip="Import presets from .rrpreset file"
             >
               <FileUp size={18} />
             </button>
@@ -839,7 +839,7 @@ export default function PresetsPanel({
               className="p-2 rounded-full hover:bg-surface transition-colors"
               disabled={presets.length === 0 || isLoading}
               onClick={handleExportAllPresets}
-              title="Export all presets to .rrpreset file"
+              data-tooltip="Export all presets to .rrpreset file"
             >
               <FileDown size={18} />
             </button>
@@ -847,7 +847,7 @@ export default function PresetsPanel({
               className="p-2 rounded-full hover:bg-surface transition-colors"
               disabled={isLoading}
               onClick={() => setIsAddModalOpen(true)}
-              title="Save as new preset"
+              data-tooltip="Save as new preset"
             >
               <Plus size={18} />
             </button>

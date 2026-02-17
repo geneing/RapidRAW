@@ -541,7 +541,7 @@ export default function LensCorrectionModal({
         <h2 className="text-xl font-bold text-primary text-shadow-shiny">Lens Correction</h2>
         <button
           onClick={handleReset}
-          title="Reset Lens Correction"
+          data-tooltip="Reset Lens Correction"
           className="p-2 rounded-full hover:bg-surface transition-colors"
         >
           <RotateCcw size={18} />
@@ -797,7 +797,7 @@ export default function LensCorrectionModal({
             <button
               onClick={() => setZoom(z => Math.max(0.1, z - 0.25))}
               className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors"
-              title="Zoom Out"
+              data-tooltip="Zoom Out"
             >
               <ZoomOut size={18} />
             </button>
@@ -807,14 +807,14 @@ export default function LensCorrectionModal({
             <button
               onClick={() => setZoom(z => Math.min(8, z + 0.25))}
               className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors"
-              title="Zoom In"
+              data-tooltip="Zoom In"
             >
               <ZoomIn size={18} />
             </button>
             <button
               onClick={handleResetZoom}
               className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors"
-              title="Reset Zoom"
+              data-tooltip="Reset Zoom"
             >
               <Maximize size={16} />
             </button>
@@ -827,7 +827,7 @@ export default function LensCorrectionModal({
                 'p-2 rounded-full transition-colors select-none',
                 isCompareActive ? 'bg-accent text-white' : 'text-white/60 hover:bg-white/10 hover:text-white'
               )}
-              title="Hold to Compare"
+              data-tooltip="Hold to Compare"
             >
               {isCompareActive ? <Eye size={18} /> : <EyeOff size={18} />}
             </button>

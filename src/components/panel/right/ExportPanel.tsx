@@ -186,6 +186,8 @@ export default function ExportPanel({
     setKeepMetadata,
     stripGps,
     setStripGps,
+    exportMasks,
+    setExportMasks,
     filenameTemplate,
     setFilenameTemplate,
     enableWatermark,
@@ -307,6 +309,7 @@ export default function ExportPanel({
               opacity: watermarkOpacity,
             }
           : null,
+      exportMasks,
     };
     const format = FILE_FORMATS.find((f: FileFormat) => f.id === fileFormat)?.extensions[0] || 'jpeg';
     debouncedEstimateSize(adjustments, exportSettings, format);
@@ -330,6 +333,7 @@ export default function ExportPanel({
     watermarkSpacing,
     watermarkOpacity,
     debouncedEstimateSize,
+    exportMasks,
   ]);
 
   const handleVariableClick = (variable: string) => {
@@ -371,6 +375,7 @@ export default function ExportPanel({
       keepMetadata,
       resize: enableResize ? { mode: resizeMode, value: resizeValue, dontEnlarge } : null,
       stripGps,
+      exportMasks: isEditorContext ? exportMasks : undefined,
       watermark:
         enableWatermark && watermarkPath
           ? {
@@ -551,6 +556,17 @@ export default function ExportPanel({
                 </div>
               )}
             </Section>
+
+            {isEditorContext && (
+              <Section title="Masks">
+                <Switch
+                  label="Export masks as separate files"
+                  checked={exportMasks}
+                  onChange={setExportMasks}
+                  disabled={isExporting}
+                />
+              </Section>
+            )}
 
             <Section title="Watermark">
               <Switch

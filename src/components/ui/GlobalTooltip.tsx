@@ -6,163 +6,158 @@ import clsx from 'clsx';
 const TOOLTIP_DELAY = 500;
 const OFFSET = 8;
 
+interface TooltipData {
+  content: string;
+  x: number;
+  y: number;
+  isAbove: boolean;
+}
+
 export default function GlobalTooltip() {
-  const [isVisible, setIsVisible] = useState(false);
-  const [content, setContent] = useState('');
-  const [position, setPosition] = useState({ x: 0, y: 0 });
-  
+  const [tooltip, setTooltip] = useState<TooltipData | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const currentTargetRef = useRef<HTMLElement | null>(null);
-
-  const clearPendingTooltip = () => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  };
-
-  const restoreTitle = (element: HTMLElement | null) => {
-    if (element) {
-      const originalTitle = element.getAttribute('data-custom-tooltip');
-      if (originalTitle) {
-        element.setAttribute('title', originalTitle);
-        element.removeAttribute('data-custom-tooltip');
-      }
-    }
-  };
-
-  const hideTooltip = () => {
-    clearPendingTooltip();
-    setIsVisible(false);
-    restoreTitle(currentTargetRef.current);
-    currentTargetRef.current = null;
-  };
+  const targetRef = useRef<HTMLElement | null>(null);
+  const rafRef = useRef<number>(0);
 
   useEffect(() => {
+    const clearTimer = () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+
+    const stopWatch = () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+    };
+
+    const hide = () => {
+      clearTimer();
+      stopWatch();
+      targetRef.current = null;
+      setTooltip(null);
+    };
+
+    const computePosition = (el: HTMLElement): TooltipData | null => {
+      const content = el.getAttribute('data-tooltip');
+      if (!content) return null;
+
+      const rect = el.getBoundingClientRect();
+      let x = rect.left + rect.width / 2;
+      let y = rect.bottom + OFFSET;
+      let isAbove = false;
+
+      x = Math.max(20, Math.min(x, window.innerWidth - 20));
+
+      if (y + 40 > window.innerHeight) {
+        y = rect.top - OFFSET;
+        isAbove = true;
+      }
+
+      return { content, x, y, isAbove };
+    };
+
+    const watchTarget = () => {
+      const tick = () => {
+        const el = targetRef.current;
+        if (!el || !document.contains(el) || !el.getAttribute('data-tooltip')) {
+          hide();
+          return;
+        }
+        rafRef.current = requestAnimationFrame(tick);
+      };
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
     const handleMouseOver = (e: MouseEvent) => {
-      const target = (e.target as HTMLElement).closest('[title], [data-custom-tooltip]');
-      
-      if (!target || !(target instanceof HTMLElement)) {
-        return;
-      }
+      const el = (e.target as HTMLElement).closest?.('[data-tooltip]');
+      if (!el || !(el instanceof HTMLElement)) return;
+      if (el === targetRef.current) return;
 
-      if (target === currentTargetRef.current) {
-        return;
-      }
+      hide();
 
-      const titleText = target.getAttribute('title') || target.getAttribute('data-custom-tooltip');
-      
-      if (!titleText) {
-        return;
-      }
+      if (!el.getAttribute('data-tooltip')) return;
 
-      if (currentTargetRef.current && currentTargetRef.current !== target) {
-        hideTooltip();
-      }
-
-      if (target.hasAttribute('title')) {
-        target.setAttribute('data-custom-tooltip', titleText);
-        target.removeAttribute('title');
-      }
-      
-      currentTargetRef.current = target;
-
-      clearPendingTooltip();
+      targetRef.current = el;
 
       timerRef.current = setTimeout(() => {
-        const rect = target.getBoundingClientRect();
-
-        let x = rect.left + rect.width / 2;
-        let y = rect.bottom + OFFSET;
-
-        const viewportWidth = window.innerWidth;
-        x = Math.max(20, Math.min(x, viewportWidth - 20));
-
-        if (y + 40 > window.innerHeight) {
-          y = rect.top - OFFSET; 
+        timerRef.current = null;
+        const current = targetRef.current;
+        if (!current || !document.contains(current)) {
+          hide();
+          return;
         }
 
-        setContent(titleText);
-        setPosition({ x, y });
-        setIsVisible(true);
+        const data = computePosition(current);
+        if (!data) {
+          hide();
+          return;
+        }
+
+        setTooltip(data);
+        watchTarget();
       }, TOOLTIP_DELAY);
     };
 
     const handleMouseOut = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const relatedTarget = e.relatedTarget as HTMLElement | null;
+      const current = targetRef.current;
+      if (!current) return;
 
-      if (!currentTargetRef.current) return;
-      
-      const isLeavingCurrentTarget = 
-        target === currentTargetRef.current || 
-        currentTargetRef.current.contains(target);
+      const from = e.target as HTMLElement;
+      const to = e.relatedTarget as HTMLElement | null;
 
-      const isMovingToChild = 
-        relatedTarget && 
-        currentTargetRef.current.contains(relatedTarget);
+      const leaving = from === current || current.contains(from);
+      const staying = to !== null && current.contains(to);
 
-      if (isLeavingCurrentTarget && !isMovingToChild) {
-        hideTooltip();
+      if (leaving && !staying) {
+        hide();
       }
     };
 
-    const handleMouseDown = () => {
-      hideTooltip();
-    };
-
-    const handleScroll = () => {
-      hideTooltip();
-    };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        hideTooltip();
-      }
+    const dismiss = () => hide();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') hide();
     };
 
     document.addEventListener('mouseover', handleMouseOver);
     document.addEventListener('mouseout', handleMouseOut);
-    document.addEventListener('mousedown', handleMouseDown);
-    document.addEventListener('scroll', handleScroll, true);
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('mousedown', dismiss);
+    document.addEventListener('scroll', dismiss, true);
+    document.addEventListener('keydown', onKey);
 
     return () => {
       document.removeEventListener('mouseover', handleMouseOver);
       document.removeEventListener('mouseout', handleMouseOut);
-      document.removeEventListener('mousedown', handleMouseDown);
-      document.removeEventListener('scroll', handleScroll, true);
-      document.removeEventListener('keydown', handleKeyDown);
-      clearPendingTooltip();
+      document.removeEventListener('mousedown', dismiss);
+      document.removeEventListener('scroll', dismiss, true);
+      document.removeEventListener('keydown', onKey);
+      clearTimer();
+      stopWatch();
     };
   }, []);
 
-  const isAbove = currentTargetRef.current 
-    ? position.y < currentTargetRef.current.getBoundingClientRect().top 
-    : false;
-
   return createPortal(
     <AnimatePresence mode="wait">
-      {isVisible && (
+      {tooltip && (
         <motion.div
-          key={content}
-          initial={{ opacity: 0, scale: 0.9, y: isAbove ? 5 : -5, x: "-50%" }}
-          animate={{ opacity: 1, scale: 1, y: isAbove ? -10 : 0, x: "-50%" }}
-          exit={{ opacity: 0, scale: 0.9, x: "-50%" }}
-          transition={{ duration: 0.15, ease: "easeOut" }}
-          style={{ 
-            top: position.y, 
-            left: position.x,
-          }}
+          key={tooltip.content}
+          initial={{ opacity: 0, scale: 0.9, y: tooltip.isAbove ? 5 : -5, x: '-50%' }}
+          animate={{ opacity: 1, scale: 1, y: tooltip.isAbove ? -10 : 0, x: '-50%' }}
+          exit={{ opacity: 0, scale: 0.9, x: '-50%' }}
+          transition={{ duration: 0.15, ease: 'easeOut' }}
+          style={{ top: tooltip.y, left: tooltip.x }}
           className={clsx(
-            "fixed z-[100] pointer-events-none",
-            "bg-surface/80 backdrop-blur-sm text-text-primary",
-            "border border-text-secondary/10 shadow-xl rounded-md",
-            "px-2.5 py-1.5 text-xs font-medium whitespace-nowrap",
-            isAbove && "-translate-y-full" 
+            'fixed z-[100] pointer-events-none',
+            'bg-surface/80 backdrop-blur-sm text-text-primary',
+            'border border-text-secondary/10 shadow-xl rounded-md',
+            'px-2.5 py-1.5 text-xs font-medium whitespace-nowrap',
+            tooltip.isAbove && '-translate-y-full'
           )}
         >
-          {content}
+          {tooltip.content}
         </motion.div>
       )}
     </AnimatePresence>,

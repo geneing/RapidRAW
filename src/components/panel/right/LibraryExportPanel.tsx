@@ -187,6 +187,8 @@ export default function LibraryExportPanel({
     setKeepMetadata,
     stripGps,
     setStripGps,
+    exportMasks,
+    setExportMasks,
     filenameTemplate,
     setFilenameTemplate,
     enableWatermark,
@@ -322,6 +324,7 @@ export default function LibraryExportPanel({
               opacity: watermarkOpacity,
             }
           : null,
+      exportMasks
     };
     const format = FILE_FORMATS.find((f: FileFormat) => f.id === fileFormat)?.extensions[0] || 'jpeg';
     debouncedEstimateSize(multiSelectedPaths, exportSettings, format);
@@ -346,6 +349,7 @@ export default function LibraryExportPanel({
     watermarkSpacing,
     watermarkOpacity,
     debouncedEstimateSize,
+    exportMasks,
   ]);
 
   const handleVariableClick = (variable: string) => {
@@ -387,6 +391,7 @@ export default function LibraryExportPanel({
       keepMetadata,
       resize: enableResize ? { mode: resizeMode, value: resizeValue, dontEnlarge } : null,
       stripGps,
+      exportMasks,
       watermark:
         enableWatermark && watermarkPath
           ? {
@@ -550,6 +555,15 @@ export default function LibraryExportPanel({
                   <Switch label="Remove GPS Data" checked={stripGps} onChange={setStripGps} disabled={isExporting} />
                 </div>
               )}
+            </Section>
+
+            <Section title="Masks">
+              <Switch
+                label="Export masks as separate files"
+                checked={exportMasks}
+                onChange={setExportMasks}
+                disabled={isExporting}
+              />
             </Section>
 
             <Section title="Watermark">

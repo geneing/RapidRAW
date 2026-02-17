@@ -192,7 +192,7 @@ pub async fn preview_negative_conversion(
                 let original_lock = state.original_image.lock().unwrap();
                 if let Some(loaded) = original_lock.as_ref() {
                     if loaded.path == source_path_str {
-                        loaded.image.clone()
+                        loaded.image.clone().as_ref().clone()
                     } else {
                         drop(original_lock);
                         let settings = load_settings(app_handle.clone()).unwrap_or_default();
@@ -257,7 +257,7 @@ pub async fn convert_negative_full(
         let original_lock = state.original_image.lock().unwrap();
         if let Some(loaded) = original_lock.as_ref() {
             if loaded.path == source_path_str {
-                loaded.image.clone()
+                loaded.image.clone().as_ref().clone()
             } else {
                 drop(original_lock);
                 let settings = load_settings(app_handle.clone()).unwrap_or_default();

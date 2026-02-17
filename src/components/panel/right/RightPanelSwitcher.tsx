@@ -34,7 +34,7 @@ export default function RightPanelSwitcher({ activePanel, onPanelSelect }: Right
           }`}
           key={id}
           onClick={() => onPanelSelect(id)}
-          title={title}
+          data-tooltip={title}
         >
           <Icon size={20} />
         </button>

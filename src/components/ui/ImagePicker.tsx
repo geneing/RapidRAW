@@ -41,7 +41,7 @@ export default function ImagePicker({
           <button
             onClick={handleSelectFile}
             className="text-sm text-text-primary text-right select-none cursor-pointer truncate max-w-[150px] hover:text-accent transition-colors"
-            title={imageName || 'Select an image file'}
+            data-tooltip={imageName || 'Select an image file'}
           >
             {imageName || 'Select'}
           </button>
@@ -53,7 +53,7 @@ export default function ImagePicker({
                          w-0 ml-0 opacity-0 group-hover:w-6 group-hover:ml-0 group-hover:opacity-100 
                          overflow-hidden pointer-events-none group-hover:pointer-events-auto
                          transition-all duration-200 ease-in-out"
-              title="Clear Image"
+              data-tooltip="Clear Image"
             >
               <X size={14} />
             </button>

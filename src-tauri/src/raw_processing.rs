@@ -195,6 +195,8 @@ fn develop_internal(
     check_cancel()?;
     let mut developed_intermediate = developer.develop_intermediate(&raw_image)?;
 
+    drop(raw_image);
+
     let denominator = (original_white_level - original_black_level).max(1.0);
     let rescale_factor = (u32::MAX as f32 - original_black_level) / denominator;
     let safe_highlight_compression = highlight_compression.max(1.01);

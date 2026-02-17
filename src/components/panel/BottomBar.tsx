@@ -58,7 +58,7 @@ const StarRating = ({ rating, onRate, disabled }: StarRatingProps) => {
             disabled={disabled}
             key={starValue}
             onClick={() => !disabled && onRate(starValue === rating ? 0 : starValue)}
-            title={disabled ? 'Select an image to rate' : `Rate ${starValue} star${starValue > 1 ? 's' : ''}`}
+            data-tooltip={disabled ? 'Select an image to rate' : `Rate ${starValue} star${starValue > 1 ? 's' : ''}`}
           >
             <Star
               size={18}
@@ -266,7 +266,7 @@ export default function BottomBar({
               className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               disabled={isCopyDisabled}
               onClick={onCopy}
-              title="Copy Settings"
+              data-tooltip="Copy Settings"
             >
               {isCopied ? <Check size={18} className="text-green-500 animate-pop-in" /> : <Copy size={18} />}
             </button>
@@ -274,14 +274,14 @@ export default function BottomBar({
               className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               disabled={isPasteDisabled}
               onClick={onPaste}
-              title="Paste Settings"
+              data-tooltip="Paste Settings"
             >
               {isPasted ? <Check size={18} className="text-green-500 animate-pop-in" /> : <ClipboardPaste size={18} />}
             </button>
             <button
               className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors"
               onClick={onOpenCopyPasteSettings}
-              title="Copy & Paste Settings"
+              data-tooltip="Copy & Paste Settings"
             >
               <Settings size={18} />
             </button>
@@ -303,7 +303,7 @@ export default function BottomBar({
               className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               disabled={isResetDisabled}
               onClick={onReset}
-              title="Reset All Adjustments"
+              data-tooltip="Reset All Adjustments"
             >
               <RotateCcw size={18} />
             </button>
@@ -311,7 +311,7 @@ export default function BottomBar({
               className="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               disabled={isExportDisabled}
               onClick={onExportClick}
-              title="Export"
+              data-tooltip="Export"
             >
               <Save size={18} />
             </button>
@@ -324,7 +324,7 @@ export default function BottomBar({
                 onClick={handleResetZoom}
                 onMouseEnter={() => setIsZoomLabelHovered(true)}
                 onMouseLeave={() => setIsZoomLabelHovered(false)}
-                title="Reset Zoom to Fit Window"
+                data-tooltip="Reset Zoom to Fit Window"
               >
                 <span className="absolute right-0 text-xs text-text-secondary select-none text-right w-max transition-colors hover:text-text-primary">
                   {isZoomLabelHovered ? 'Reset Zoom' : 'Zoom'}
@@ -368,7 +368,7 @@ export default function BottomBar({
                   <span
                     onClick={handlePercentClick}
                     className="cursor-pointer hover:text-text-primary transition-colors select-none"
-                    title="Click to enter custom zoom percentage"
+                    data-tooltip="Click to enter custom zoom percentage"
                   >
                     {latchedDisplayPercent}%
                   </span>
@@ -379,7 +379,7 @@ export default function BottomBar({
             <button
               className="p-1.5 rounded-md text-text-secondary hover:bg-surface hover:text-text-primary transition-colors"
               onClick={() => setIsFilmstripVisible?.(!isFilmstripVisible)}
-              title={isFilmstripVisible ? 'Collapse Filmstrip' : 'Expand Filmstrip'}
+              data-tooltip={isFilmstripVisible ? 'Collapse Filmstrip' : 'Expand Filmstrip'}
             >
               {isFilmstripVisible ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
             </button>

@@ -108,7 +108,7 @@ export default function ExportPresetsList({
           <button
             onClick={() => setIsCreating(true)}
             className="p-2 bg-surface hover:bg-card-active rounded-md text-text-primary transition-colors"
-            title="Save current settings as new preset"
+            data-tooltip="Save current settings as new preset"
           >
             <Plus size={18} />
           </button>
@@ -121,14 +121,14 @@ export default function ExportPresetsList({
                 className={`p-2 bg-surface hover:bg-card-active rounded-md transition-colors ${
                   isSaved ? 'text-green-500' : 'text-text-secondary'
                 }`}
-                title={isSaved ? "Saved!" : "Overwrite selected preset"}
+                data-tooltip={isSaved ? "Saved!" : "Overwrite selected preset"}
               >
                 {isSaved ? <Check size={18} /> : <Save size={18} />}
               </button>
               <button
                 onClick={handleDeletePreset}
                 className="p-2 bg-surface hover:bg-red-500/20 hover:text-red-500 rounded-md text-text-secondary transition-colors"
-                title="Delete preset"
+                data-tooltip="Delete preset"
               >
                 <Trash2 size={18} />
               </button>

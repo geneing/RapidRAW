@@ -48,7 +48,7 @@ import { useThumbnails } from './hooks/useThumbnails';
 import { ImageDimensions } from './hooks/useImageRenderSize';
 import RightPanelSwitcher from './components/panel/right/RightPanelSwitcher';
 import MetadataPanel from './components/panel/right/MetadataPanel';
-import CropPanel from './components/panel/right/CropPanel';
+import CropPanel, { type OverlayMode } from './components/panel/right/CropPanel';
 import PresetsPanel from './components/panel/right/PresetsPanel';
 import AIPanel from './components/panel/right/AIPanel';
 import ExportPanel from './components/panel/right/ExportPanel';
@@ -121,6 +121,7 @@ import {
   CullingSuggestions,
 } from './components/ui/AppProperties';
 import { ChannelConfig } from './components/adjustments/Curves';
+import HdrModal from './components/modals/HdrModal';
 
 const CLERK_PUBLISHABLE_KEY = 'pk_test_YnJpZWYtc2Vhc25haWwtMTIuY2xlcmsuYWNjb3VudHMuZGV2JA'; // local dev key
 
@@ -160,6 +161,14 @@ interface CollageModalState {
 }
 
 interface PanoramaModalState {
+  error: string | null;
+  finalImageBase64: string | null;
+  isOpen: boolean;
+  progressMessage: string | null;
+  stitchingSourcePaths: Array<string>;
+}
+
+interface HdrModalState {
   error: string | null;
   finalImageBase64: string | null;
   isOpen: boolean;
@@ -349,6 +358,8 @@ function App() {
   const [fullResolutionUrl, setFullResolutionUrl] = useState<string | null>(null);
   const [isLoadingFullRes, setIsLoadingFullRes] = useState(false);
   const [isRotationActive, setIsRotationActive] = useState(false);
+  const [overlayMode, setOverlayMode] = useState<OverlayMode>('thirds');
+  const [overlayRotation, setOverlayRotation] = useState(0);
   const [transformedOriginalUrl, setTransformedOriginalUrl] = useState<string | null>(null);
   const fullResRequestRef = useRef<any>(null);
   const fullResCacheKeyRef = useRef<string | null>(null);
@@ -420,6 +431,13 @@ function App() {
   const [folderActionTarget, setFolderActionTarget] = useState<string | null>(null);
   const [confirmModalState, setConfirmModalState] = useState<ConfirmModalState>({ isOpen: false });
   const [panoramaModalState, setPanoramaModalState] = useState<PanoramaModalState>({
+    error: null,
+    finalImageBase64: null,
+    isOpen: false,
+    progressMessage: '',
+    stitchingSourcePaths: [],
+  });
+  const [hdrModalState, setHdrModalState] = useState<HdrModalState>({
     error: null,
     finalImageBase64: null,
     isOpen: false,
@@ -1260,7 +1278,7 @@ function App() {
         payload.aiPatches.forEach((p: any) => {
           if (p.id && p.patchData && !p.isLoading) {
             if (patchesSentToBackend.current.has(p.id)) {
-              p.patchData = null; 
+              p.patchData = null;
             } else {
               patchesSentToBackend.current.add(p.id);
             }
@@ -1285,9 +1303,9 @@ function App() {
       }
 
       try {
-        await invoke(Invokes.ApplyAdjustments, { 
-          jsAdjustments: payload, 
-          isInteractive: dragging 
+        await invoke(Invokes.ApplyAdjustments, {
+          jsAdjustments: payload,
+          isInteractive: dragging
         });
       } catch (err) {
         console.error('Failed to invoke apply_adjustments:', err);
@@ -1477,12 +1495,12 @@ function App() {
         if (settings.lastRootPath) {
           const root = settings.lastRootPath;
           const currentPath = settings.lastFolderState?.currentFolderPath || root;
-          
+
           const command =
             settings.libraryViewMode === LibraryViewMode.Recursive
               ? Invokes.ListImagesRecursive
               : Invokes.ListImagesInDir;
-          
+
           preloadedDataRef.current = {
             rootPath: root,
             currentPath: currentPath,
@@ -1916,6 +1934,8 @@ function App() {
     setIsWbPickerActive(false);
     setActiveAiSubMaskId(null);
     setLibraryActivePath(lastActivePath);
+    setLiveAdjustments(INITIAL_ADJUSTMENTS);
+    resetAdjustmentsHistory(INITIAL_ADJUSTMENTS);
   }, [selectedImage?.path]);
 
   const handleImageSelect = useCallback(
@@ -1925,7 +1945,7 @@ function App() {
       }
       applyAdjustments.cancel();
       debouncedSave.cancel();
-      patchesSentToBackend.current.clear(); 
+      patchesSentToBackend.current.clear();
 
       setSelectedImage({
         exif: null,
@@ -1950,14 +1970,12 @@ function App() {
       setFullScreenUrl(null);
       setFullResolutionUrl(null);
       setTransformedOriginalUrl(null);
-      setLiveAdjustments(INITIAL_ADJUSTMENTS);
-      resetAdjustmentsHistory(INITIAL_ADJUSTMENTS);
       setShowOriginal(false);
       setActiveMaskId(null);
       setActiveMaskContainerId(null);
       setActiveAiPatchContainerId(null);
       setActiveAiSubMaskId(null);
-      setIsWbPickerActive(false); 
+      setIsWbPickerActive(false);
 
       if (transformWrapperRef.current) {
         transformWrapperRef.current.resetTransform(0);
@@ -1966,7 +1984,7 @@ function App() {
       setZoom(1);
       setIsLibraryExportPanelVisible(false);
     },
-    [selectedImage?.path, applyAdjustments, debouncedSave, thumbnails, resetAdjustmentsHistory],
+    [selectedImage?.path, applyAdjustments, debouncedSave, thumbnails],
   );
 
   const executeDelete = useCallback(
@@ -1998,7 +2016,7 @@ function App() {
                 .slice(0, currentIndex)
                 .reverse()
                 .find((img) => !pathsToDelete.includes(img.path));
-              
+
               if (prevCandidate) {
                 nextImagePath = prevCandidate.path;
               }
@@ -2522,7 +2540,7 @@ function App() {
     [originalSize, baseRenderSize, handleFullResolutionLogic, adjustments.orientationSteps],
   );
 
-  const isAnyModalOpen = 
+  const isAnyModalOpen =
     isCreateFolderModalOpen ||
     isRenameFolderModalOpen ||
     isRenameFileModalOpen ||
@@ -2738,7 +2756,7 @@ function App() {
         if (isEffectActive) {
           const payload = event.payload;
           const isObject = typeof payload === 'object' && payload !== null;
-          
+
           setDenoiseModalState((prev) => ({
             ...prev,
             isProcessing: false,
@@ -2855,6 +2873,52 @@ function App() {
   useEffect(() => {
     let isEffectActive = true;
 
+    const unlistenProgress = listen('hdr-progress', (event: any) => {
+      if (isEffectActive) {
+        setHdrModalState((prev: HdrModalState) => ({
+          ...prev,
+          error: null,
+          finalImageBase64: null,
+          isOpen: true,
+          progressMessage: event.payload,
+        }));
+      }
+    });
+
+    const unlistenComplete = listen('hdr-complete', (event: any) => {
+      if (isEffectActive) {
+        const { base64 } = event.payload;
+        setHdrModalState((prev: HdrModalState) => ({
+          ...prev,
+          error: null,
+          finalImageBase64: base64,
+          progressMessage: 'Hdr Ready',
+        }));
+      }
+    });
+
+    const unlistenError = listen('hdr-error', (event: any) => {
+      if (isEffectActive) {
+        setHdrModalState((prev: HdrModalState) => ({
+          ...prev,
+          error: String(event.payload),
+          finalImageBase64: null,
+          progressMessage: 'An error occurred.',
+        }));
+      }
+    });
+
+    return () => {
+      isEffectActive = false;
+      unlistenProgress.then((f: any) => f());
+      unlistenComplete.then((f: any) => f());
+      unlistenError.then((f: any) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    let isEffectActive = true;
+
     const unlistenStart = listen('culling-start', (event: any) => {
       if (isEffectActive) {
         setCullingModalState({
@@ -2913,26 +2977,46 @@ function App() {
     }
   };
 
+  const handleSaveHdr = async (): Promise<string> => {
+    if (hdrModalState.stitchingSourcePaths.length === 0) {
+      const err = 'Source paths for HDR not found.';
+      setHdrModalState((prev: HdrModalState) => ({ ...prev, error: err }));
+      throw new Error(err);
+    }
+
+    try {
+      const savedPath: string = await invoke(Invokes.SaveHdr, {
+        firstPathStr: hdrModalState.stitchingSourcePaths[0],
+      });
+      await refreshImageList();
+      return savedPath;
+    } catch (err) {
+      console.error('Failed to save HDR image:', err);
+      setHdrModalState((prev: HdrModalState) => ({ ...prev, error: String(err) }));
+      throw err;
+    }
+  }
+
   const handleApplyDenoise = useCallback(async (intensity: number) => {
     if (!denoiseModalState.targetPath) return;
-    
-    setDenoiseModalState(prev => ({ 
-      ...prev, 
-      isProcessing: true, 
-      error: null, 
-      progressMessage: "Starting engine..." 
+
+    setDenoiseModalState(prev => ({
+      ...prev,
+      isProcessing: true,
+      error: null,
+      progressMessage: "Starting engine..."
     }));
-    
+
     try {
-        await invoke(Invokes.ApplyDenoising, { 
+        await invoke(Invokes.ApplyDenoising, {
             path: denoiseModalState.targetPath,
-            intensity: intensity 
+            intensity: intensity
         });
     } catch (err) {
-        setDenoiseModalState(prev => ({ 
-            ...prev, 
-            isProcessing: false, 
-            error: String(err) 
+        setDenoiseModalState(prev => ({
+            ...prev,
+            isProcessing: false,
+            error: String(err)
         }));
     }
   }, [denoiseModalState.targetPath]);
@@ -2967,7 +3051,7 @@ function App() {
         (currentAdjustments) => {
           applyAdjustments(currentAdjustments, true);
         },
-        100, 
+        100,
         { leading: true, trailing: true }
       ),
     [applyAdjustments]
@@ -2988,7 +3072,7 @@ function App() {
 
     if (isSliderDragging) {
       debouncedApplyAdjustments.cancel();
-      
+
       const livePreviewsEnabled = appSettings?.enableLivePreviews !== false;
       const idleTimeoutDuration = livePreviewsEnabled ? 150 : 50;
 
@@ -3011,12 +3095,12 @@ function App() {
       debouncedApplyAdjustments.cancel();
     };
   }, [
-    adjustments, 
-    selectedImage?.path, 
-    selectedImage?.isReady, 
-    isSliderDragging, 
-    applyAdjustments, 
-    debouncedApplyAdjustments, 
+    adjustments,
+    selectedImage?.path,
+    selectedImage?.isReady,
+    isSliderDragging,
+    applyAdjustments,
+    debouncedApplyAdjustments,
     throttledInteractiveUpdate,
     debouncedSave,
     appSettings?.enableLivePreviews
@@ -3081,7 +3165,7 @@ function App() {
 
       let preloadedImages: ImageFile[] | undefined = undefined;
       if (
-        preloadedDataRef.current.currentPath === pathToSelect && 
+        preloadedDataRef.current.currentPath === pathToSelect &&
         preloadedDataRef.current.images
       ) {
          try {
@@ -3220,47 +3304,66 @@ function App() {
 
   useEffect(() => {
     if (selectedImage && !selectedImage.isReady && selectedImage.path) {
-    let isEffectActive = true;
-    const loadFullImageData = async () => {
+      let isEffectActive = true;
+
+      const loadMetadataEarly = async () => {
         try {
-        const loadImageResult: any = await invoke(Invokes.LoadImage, { path: selectedImage.path });
-        if (!isEffectActive) {
-            return;
-        }
-        if (!isEffectActive) {
-            return;
-        }
+          const metadata: any = await invoke(Invokes.LoadMetadata, { path: selectedImage.path });
+          if (!isEffectActive) return;
 
-        const { width, height } = loadImageResult;
-        setOriginalSize({ width, height });
+          let initialAdjusts;
+          if (metadata.adjustments && !metadata.adjustments.is_null) {
+            initialAdjusts = normalizeLoadedAdjustments(metadata.adjustments);
+          } else {
+            initialAdjusts = { ...INITIAL_ADJUSTMENTS };
+          }
+          
+          setLiveAdjustments(initialAdjusts);
+          resetAdjustmentsHistory(initialAdjusts);
+        } catch (err) {
+          console.error('Failed to load metadata early:', err);
+        }
+      };
 
-        if (appSettings?.editorPreviewResolution) {
+      loadMetadataEarly();
+
+      const loadFullImageData = async () => {
+        try {
+          const loadImageResult: any = await invoke(Invokes.LoadImage, { path: selectedImage.path });
+          if (!isEffectActive) {
+            return;
+          }
+
+          const { width, height } = loadImageResult;
+          setOriginalSize({ width, height });
+
+          if (appSettings?.editorPreviewResolution) {
             const maxSize = appSettings.editorPreviewResolution;
             const aspectRatio = width / height;
 
             if (width > height) {
-            const pWidth = Math.min(width, maxSize);
-            const pHeight = Math.round(pWidth / aspectRatio);
-            setPreviewSize({ width: pWidth, height: pHeight });
+              const pWidth = Math.min(width, maxSize);
+              const pHeight = Math.round(pWidth / aspectRatio);
+              setPreviewSize({ width: pWidth, height: pHeight });
             } else {
-            const pHeight = Math.min(height, maxSize);
-            const pWidth = Math.round(pHeight * aspectRatio);
-            setPreviewSize({ width: pWidth, height: pHeight });
+              const pHeight = Math.min(height, maxSize);
+              const pWidth = Math.round(pHeight * aspectRatio);
+              setPreviewSize({ width: pWidth, height: pHeight });
             }
-        } else {
+          } else {
             setPreviewSize({ width: 0, height: 0 });
-        }
+          }
 
-        setIsFullResolution(false);
-        setFullResolutionUrl(null);
-        fullResCacheKeyRef.current = null;
+          setIsFullResolution(false);
+          setFullResolutionUrl(null);
+          fullResCacheKeyRef.current = null;
 
-        const blob = new Blob([loadImageResult.original_image_bytes], { type: 'image/jpeg' });
-        const originalUrl = URL.createObjectURL(blob);
+          const blob = new Blob([loadImageResult.original_image_bytes], { type: 'image/jpeg' });
+          const originalUrl = URL.createObjectURL(blob);
 
-        setSelectedImage((currentSelected: SelectedImage | null) => {
+          setSelectedImage((currentSelected: SelectedImage | null) => {
             if (currentSelected && currentSelected.path === selectedImage.path) {
-            return {
+              return {
                 ...currentSelected,
                 exif: loadImageResult.exif,
                 height: loadImageResult.height,
@@ -3269,42 +3372,34 @@ function App() {
                 metadata: loadImageResult.metadata,
                 originalUrl: originalUrl,
                 width: loadImageResult.width,
-            };
+              };
             }
             return currentSelected;
-        });
+          });
 
-        let initialAdjusts;
-        if (loadImageResult.metadata.adjustments && !loadImageResult.metadata.adjustments.is_null) {
-            initialAdjusts = normalizeLoadedAdjustments(loadImageResult.metadata.adjustments);
-
-            if (!initialAdjusts.aspectRatio && !initialAdjusts.crop) {
-              initialAdjusts.aspectRatio = loadImageResult.width / loadImageResult.height;
+          // Only update aspect ratio if it wasn't loaded from metadata
+          setLiveAdjustments((prev: Adjustments) => {
+            if (!prev.aspectRatio && !prev.crop) {
+              return { ...prev, aspectRatio: loadImageResult.width / loadImageResult.height };
             }
-        } else {
-            initialAdjusts = {
-            ...INITIAL_ADJUSTMENTS,
-            aspectRatio: loadImageResult.width / loadImageResult.height,
-            };
-        }
-        setLiveAdjustments(initialAdjusts);
-        resetAdjustmentsHistory(initialAdjusts);
+            return prev;
+          });
         } catch (err) {
-        if (isEffectActive) {
+          if (isEffectActive) {
             console.error('Failed to load image:', err);
             setError(`Failed to load image: ${err}`);
             setSelectedImage(null);
-        }
+          }
         } finally {
-        if (isEffectActive) {
+          if (isEffectActive) {
             setIsViewLoading(false);
+          }
         }
-        }
-    };
-    loadFullImageData();
-    return () => {
+      };
+      loadFullImageData();
+      return () => {
         isEffectActive = false;
-    };
+      };
     }
   }, [selectedImage?.path, selectedImage?.isReady, resetAdjustmentsHistory, appSettings?.editorPreviewResolution]);
 
@@ -3398,12 +3493,12 @@ function App() {
 
             const originalAspectRatio =
               selectedImage.width && selectedImage.height ? selectedImage.width / selectedImage.height : null;
-            
-            resetAdjustmentsHistory({ 
-                ...INITIAL_ADJUSTMENTS, 
+
+            resetAdjustmentsHistory({
+                ...INITIAL_ADJUSTMENTS,
                 aspectRatio: originalAspectRatio,
-                rating: currentRating, 
-                aiPatches: [] 
+                rating: currentRating,
+                aiPatches: []
             });
           }
         })
@@ -3545,6 +3640,11 @@ function App() {
             disabled: true,
             icon: Images,
             label: 'Stitch Panorama',
+          },
+          {
+            disabled: true,
+            icon: Images,
+            label: 'Merge to HDR',
           },
           {
             icon: LayoutTemplate,
@@ -3712,11 +3812,12 @@ function App() {
     const pasteLabel = isSingleSelection ? 'Paste Adjustments' : `Paste Adjustments to ${selectionCount} Images`;
     const resetLabel = isSingleSelection ? 'Reset Adjustments' : `Reset Adjustments on ${selectionCount} Images`;
     const copyLabel = isSingleSelection ? 'Copy Image' : `Copy ${selectionCount} Images`;
-    const autoAdjustLabel = isSingleSelection ? 'Auto Adjust Image' : `Auto Adjust ${selectionCount} Images`;
+    const autoAdjustLabel = isSingleSelection ? 'Auto Adjust Image' : `Auto Adjust Images`;
     const renameLabel = isSingleSelection ? 'Rename Image' : `Rename ${selectionCount} Images`;
-    const cullLabel = isSingleSelection ? 'Cull Image' : `Cull ${selectionCount} Images`;
+    const cullLabel = isSingleSelection ? 'Cull Image' : `Cull Images`;
     const collageLabel = isSingleSelection ? 'Frame Image' : 'Create Collage';
     const stitchLabel = `Stitch Panorama`;
+    const mergeLabel = `Merge to HDR`;
 
     const handleCreateVirtualCopy = async (sourcePath: string) => {
       try {
@@ -3858,7 +3959,7 @@ function App() {
           {
             label: 'Convert Negative',
             icon: SquaresExclude,
-            disabled: !isSingleSelection, 
+            disabled: !isSingleSelection,
             onClick: () => {
               setNegativeModalState({
                 isOpen: true,
@@ -3880,6 +3981,28 @@ function App() {
               });
               invoke(Invokes.StitchPanorama, { paths: finalSelection }).catch((err) => {
                 setPanoramaModalState((prev: PanoramaModalState) => ({
+                  ...prev,
+                  error: String(err),
+                  isOpen: true,
+                  progressMessage: 'Failed to start.',
+                }));
+              });
+            },
+          },
+          {
+            disabled: selectionCount < 2  || selectionCount > 9,
+            icon: Images,
+            label: mergeLabel,
+            onClick: () => {
+              setHdrModalState({
+                error: null,
+                finalImageBase64: null,
+                isOpen: true,
+                progressMessage: 'Starting hdr process...',
+                stitchingSourcePaths: finalSelection,
+              });
+              invoke(Invokes.MergeHdr, { paths: finalSelection }).catch((err) => {
+                setHdrModalState((prev: HdrModalState) => ({
                   ...prev,
                   error: String(err),
                   isOpen: true,
@@ -4435,6 +4558,8 @@ function App() {
               fullResolutionUrl={fullResolutionUrl}
               isLoadingFullRes={isLoadingFullRes}
               isRotationActive={isRotationActive}
+              overlayMode={overlayMode}
+              overlayRotation={overlayRotation}
             />
             <Resizer
               direction={Orientation.Horizontal}
@@ -4523,6 +4648,10 @@ function App() {
                           setAdjustments={setAdjustments}
                           setIsStraightenActive={setIsStraightenActive}
                           setIsRotationActive={setIsRotationActive}
+                          overlayMode={overlayMode}
+                          overlayRotation={overlayRotation}
+                          setOverlayRotation={setOverlayRotation}
+                          setOverlayMode={setOverlayMode}
                         />
                       )}
                       {renderedRightPanel === Panel.Masks && (
@@ -4691,7 +4820,26 @@ function App() {
         onSave={handleSavePanorama}
         progressMessage={panoramaModalState.progressMessage}
       />
-      <NegativeConversionModal 
+      <HdrModal
+        error={hdrModalState.error}
+        finalImageBase64={hdrModalState.finalImageBase64}
+        isOpen={hdrModalState.isOpen}
+        onClose={() =>
+          setHdrModalState({
+            isOpen: false,
+            progressMessage: "",
+            finalImageBase64: null,
+            error: null,
+            stitchingSourcePaths: [],
+          })
+        }
+        onOpenFile={(path: string) => {
+          handleImageSelect(path);
+        }}
+        onSave={handleSaveHdr}
+        progressMessage={hdrModalState.progressMessage}
+      />
+      <NegativeConversionModal
         isOpen={negativeModalState.isOpen}
         onClose={() => setNegativeModalState(prev => ({ ...prev, isOpen: false }))}
         selectedImagePath={negativeModalState.targetPath}
@@ -4703,7 +4851,7 @@ function App() {
             });
         }}
       />
-      <DenoiseModal 
+      <DenoiseModal
         isOpen={denoiseModalState.isOpen}
         onClose={() => setDenoiseModalState(prev => ({ ...prev, isOpen: false }))}
         onDenoise={handleApplyDenoise}

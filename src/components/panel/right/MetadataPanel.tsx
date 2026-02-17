@@ -55,7 +55,7 @@ function MetadataItem({ label, value }: MetaDataItemProps) {
   return (
     <div className="grid grid-cols-3 gap-2 text-xs py-1.5 px-2 rounded odd:bg-bg-primary">
       <p className="font-semibold text-text-primary col-span-1 break-words">{label}</p>
-      <p className="text-text-secondary col-span-2 break-words truncate" title={String(value)}>
+      <p className="text-text-secondary col-span-2 break-words truncate" data-tooltip={String(value)}>
         {String(value)}
       </p>
     </div>
@@ -193,7 +193,7 @@ export default function MetadataPanel({ selectedImage }: MetaDataPanelProps) {
                       href={`https://www.openstreetmap.org/?mlat=${gpsData.lat}&mlon=${gpsData.lon}#map=15/${gpsData.lat}/${gpsData.lon}`}
                       rel="noopener noreferrer"
                       target="_blank"
-                      title="Click to open map in a new tab"
+                      data-tooltip="Click to open map in a new tab"
                     ></a>
                   </div>
                   <div className="flex flex-col gap-1">

@@ -109,7 +109,7 @@ const ToneMapperSwitch = ({
           {toneMapperOptions.map((mapper) => (
             <button
               key={mapper.id}
-              title={mapper.title}
+              data-tooltip={mapper.title}
               ref={(el) => {
                 if (el) {
                   const newRefs = new Map(buttonRefs);

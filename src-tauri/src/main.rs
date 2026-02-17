@@ -31,14 +31,15 @@ use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
+use std::io::Write;
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::thread;
-use std::io::Write;
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Sender, Receiver};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::Duration;
 
 use base64::{Engine as _, engine::general_purpose};
 use image::codecs::jpeg::JpegEncoder;
@@ -46,9 +47,11 @@ use image::{
     DynamicImage, GenericImageView, GrayImage, ImageBuffer, ImageFormat, Luma, Rgb, RgbImage, Rgba,
     RgbaImage, imageops,
 };
+use image_hdr::hdr_merge_images;
+use image_hdr::input::HDRInput;
 use imageproc::drawing::draw_line_segment_mut;
 use imageproc::edges::canny;
-use imageproc::hough::{detect_lines, LineDetectionOptions};
+use imageproc::hough::{LineDetectionOptions, detect_lines};
 use rayon::prelude::*;
 use reqwest;
 use serde::{Deserialize, Serialize};
@@ -58,24 +61,24 @@ use tempfile::NamedTempFile;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use wgpu::{Texture, TextureView};
+use mozjpeg_rs::{Encoder, Preset};
 
 use crate::ai_processing::{
     AiForegroundMaskParameters, AiSkyMaskParameters, AiState, AiSubjectMaskParameters,
     generate_image_embeddings, get_or_init_ai_models, run_sam_decoder, run_sky_seg_model,
     run_u2netp_model,
 };
-use crate::file_management::{
-    AppSettings, load_settings, parse_virtual_path,
-    read_file_mapped,
-};
+use crate::exif_processing::{read_exposure_time_secs, read_iso};
+use crate::file_management::{AppSettings, load_settings, parse_virtual_path, read_file_mapped};
 use crate::formats::is_raw_file;
 use crate::image_loader::{
     composite_patches_on_image, load_and_composite, load_base_image_from_bytes,
 };
 use crate::image_processing::{
-    Crop, GpuContext, ImageMetadata, apply_coarse_rotation, apply_crop, apply_flip, apply_rotation,
-    get_all_adjustments_from_json, get_or_init_gpu_context, process_and_get_dynamic_image, apply_unwarp_geometry,
-    downscale_f32_image, apply_cpu_default_raw_processing, GeometryParams, warp_image_geometry, apply_geometry_warp
+    AllAdjustments, Crop, GeometryParams, GpuContext, ImageMetadata, apply_coarse_rotation,
+    apply_cpu_default_raw_processing, apply_crop, apply_flip, apply_geometry_warp, apply_rotation,
+    apply_unwarp_geometry, downscale_f32_image, get_all_adjustments_from_json,
+    get_or_init_gpu_context, process_and_get_dynamic_image, warp_image_geometry,
 };
 use crate::lut_processing::Lut;
 use crate::mask_generation::{AiPatchDefinition, MaskDefinition, generate_mask_bitmap};
@@ -84,7 +87,7 @@ use tagging_utils::{candidates, hierarchy};
 #[derive(Clone)]
 pub struct LoadedImage {
     path: String,
-    image: DynamicImage,
+    image: Arc<DynamicImage>, 
     is_raw: bool,
 }
 
@@ -125,6 +128,7 @@ pub struct AppState {
     ai_state: Mutex<Option<AiState>>,
     ai_init_lock: TokioMutex<()>,
     export_task_handle: Mutex<Option<JoinHandle<()>>>,
+    hdr_result: Arc<Mutex<Option<DynamicImage>>>,
     panorama_result: Arc<Mutex<Option<DynamicImage>>>,
     denoise_result: Arc<Mutex<Option<DynamicImage>>>,
     negative_conversion_result: Arc<Mutex<Option<DynamicImage>>>,
@@ -135,7 +139,7 @@ pub struct AppState {
     preview_worker_tx: Mutex<Option<Sender<PreviewJob>>>,
     pub mask_cache: Mutex<HashMap<u64, GrayImage>>,
     pub patch_cache: Mutex<HashMap<String, serde_json::Value>>,
-    pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>, 
+    pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>,
     pub thumbnail_geometry_cache: Mutex<HashMap<String, (u64, DynamicImage, f32)>>,
     pub lens_db: Mutex<Option<lens_correction::LensDatabase>>,
     pub load_image_generation: Arc<AtomicUsize>,
@@ -176,6 +180,8 @@ struct ExportSettings {
     strip_gps: bool,
     filename_template: Option<String>,
     watermark: Option<WatermarkSettings>,
+    #[serde(default)]
+    export_masks: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -253,7 +259,7 @@ const GEOMETRY_KEYS: &[&str] = &[
     "transformRotate", "transformAspect", "transformScale",
     "transformXOffset", "transformYOffset", "lensDistortionAmount",
     "lensVignetteAmount", "lensTcaAmount", "lensDistortionParams",
-    "lensMaker", "lensModel", "lensDistortionEnabled", 
+    "lensMaker", "lensModel", "lensDistortionEnabled",
     "lensTcaEnabled", "lensVignetteEnabled"
 ];
 
@@ -269,7 +275,7 @@ pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
     for key in GEOMETRY_KEYS {
         if let Some(val) = adjustments.get(key) {
             key.hash(&mut hasher);
-            val.to_string().hash(&mut hasher); 
+            val.to_string().hash(&mut hasher);
         }
     }
 
@@ -452,11 +458,7 @@ fn generate_transformed_preview(
     let (full_res_w, full_res_h) = transformed_full_res.dimensions();
 
     let final_preview_base = if full_res_w > final_preview_dim || full_res_h > final_preview_dim {
-        downscale_f32_image(
-            &transformed_full_res,
-            final_preview_dim,
-            final_preview_dim,
-        )
+        downscale_f32_image(&transformed_full_res, final_preview_dim, final_preview_dim)
     } else {
         transformed_full_res
     };
@@ -500,6 +502,21 @@ async fn load_image(
     let my_generation = state.load_image_generation.fetch_add(1, Ordering::SeqCst) + 1;
     let generation_tracker = state.load_image_generation.clone();
     let cancel_token = Some((generation_tracker.clone(), my_generation));
+
+    {
+        *state.original_image.lock().unwrap() = None;
+        *state.cached_preview.lock().unwrap() = None;
+        *state.gpu_image_cache.lock().unwrap() = None;
+
+        state.mask_cache.lock().unwrap().clear();
+        state.patch_cache.lock().unwrap().clear();
+        state.geometry_cache.lock().unwrap().clear();
+
+        *state.denoise_result.lock().unwrap() = None;
+        *state.hdr_result.lock().unwrap() = None;
+        *state.panorama_result.lock().unwrap() = None;
+        *state.negative_conversion_result.lock().unwrap() = None;
+    }
 
     let (source_path, sidecar_path) = parse_virtual_path(&path);
     let source_path_str = source_path.to_string_lossy().to_string();
@@ -578,15 +595,9 @@ async fn load_image(
 
     let (orig_width, orig_height) = pristine_img.dimensions();
 
-    *state.cached_preview.lock().unwrap() = None;
-    *state.gpu_image_cache.lock().unwrap() = None;
-    state.mask_cache.lock().unwrap().clear();
-    state.patch_cache.lock().unwrap().clear();
-    state.geometry_cache.lock().unwrap().clear();
-
     *state.original_image.lock().unwrap() = Some(LoadedImage {
         path: source_path_str.clone(),
-        image: pristine_img,
+        image: Arc::new(pristine_img),
         is_raw,
     });
 
@@ -625,8 +636,8 @@ fn apply_watermark(
     let (base_w, base_h) = base_image.dimensions();
     let base_min_dim = base_w.min(base_h) as f32;
 
-    let watermark_scale_factor = (base_min_dim * (watermark_settings.scale / 100.0))
-        / watermark_img.width().max(1) as f32;
+    let watermark_scale_factor =
+        (base_min_dim * (watermark_settings.scale / 100.0)) / watermark_img.width().max(1) as f32;
     let new_wm_w = (watermark_img.width() as f32 * watermark_scale_factor).round() as u32;
     let new_wm_h = (watermark_img.height() as f32 * watermark_scale_factor).round() as u32;
 
@@ -666,9 +677,9 @@ fn apply_watermark(
         WatermarkAnchor::CenterLeft | WatermarkAnchor::Center | WatermarkAnchor::CenterRight => {
             (base_h as i64 - wm_h as i64) / 2
         }
-        WatermarkAnchor::BottomLeft | WatermarkAnchor::BottomCenter | WatermarkAnchor::BottomRight => {
-            base_h as i64 - wm_h as i64 - spacing_pixels
-        }
+        WatermarkAnchor::BottomLeft
+        | WatermarkAnchor::BottomCenter
+        | WatermarkAnchor::BottomRight => base_h as i64 - wm_h as i64 - spacing_pixels,
     };
 
     image::imageops::overlay(base_image, &final_watermark, x, y);
@@ -685,16 +696,16 @@ pub fn get_cached_or_generate_mask(
     crop_offset: (f32, f32),
 ) -> Option<GrayImage> {
     let mut hasher = DefaultHasher::new();
-    
+
     let def_json = serde_json::to_string(&def).unwrap_or_default();
     def_json.hash(&mut hasher);
-    
+
     width.hash(&mut hasher);
     height.hash(&mut hasher);
     scale.to_bits().hash(&mut hasher);
     crop_offset.0.to_bits().hash(&mut hasher);
     crop_offset.1.to_bits().hash(&mut hasher);
-    
+
     let key = hasher.finish();
 
     {
@@ -709,7 +720,7 @@ pub fn get_cached_or_generate_mask(
     if let Some(img) = &generated {
         let mut cache = state.mask_cache.lock().unwrap();
         if cache.len() > 50 {
-            cache.clear(); 
+            cache.clear();
         }
         cache.insert(key, img.clone());
     }
@@ -722,6 +733,7 @@ fn process_preview_job(
     state: tauri::State<AppState>,
     job: PreviewJob,
 ) -> Result<(), String> {
+    let fn_start = std::time::Instant::now();
     let context = get_or_init_gpu_context(&state)?;
     let mut adjustments_json = job.adjustments;
     hydrate_adjustments(&state, &mut adjustments_json);
@@ -735,7 +747,7 @@ fn process_preview_job(
     let settings = load_settings(app_handle.clone()).unwrap_or_default();
     let hq_live = settings.enable_high_quality_live_previews.unwrap_or(false);
     let interactive_divisor = if hq_live { 1.5 } else { 2.0 };
-    let interactive_quality = if hq_live { 75 } else { 45 };
+    let interactive_quality = if hq_live { 80 } else { 50 };
 
     let mut cached_preview_lock = state.cached_preview.lock().unwrap();
 
@@ -871,23 +883,30 @@ fn process_preview_job(
             }
         }
 
-        let mut buf = Cursor::new(Vec::new());
-        if final_processed_image
-            .to_rgb8()
-            .write_with_encoder(JpegEncoder::new_with_quality(&mut buf, jpeg_quality))
-            .is_ok()
+        let (width, height) = final_processed_image.dimensions();
+        let rgb_pixels = final_processed_image.to_rgb8().into_vec();
+
+        match Encoder::new(Preset::BaselineFastest)
+            .quality(jpeg_quality as u8)
+            .encode_rgb(&rgb_pixels, width as u32, height as u32)
         {
-            let _ = app_handle.emit("preview-update-final", buf.get_ref());
+            Ok(bytes) => {
+                let _ = app_handle.emit("preview-update-final", bytes);
+            },
+            Err(e) => {
+                log::error!("Failed to encode preview with mozjpeg-rs: {}", e);
+            }
         }
     }
 
+    log::info!("[process_preview_job] completed in {:?}", fn_start.elapsed());
     Ok(())
 }
 
 fn start_preview_worker(app_handle: tauri::AppHandle) {
     let state = app_handle.state::<AppState>();
     let (tx, rx): (Sender<PreviewJob>, Receiver<PreviewJob>) = mpsc::channel();
-    
+
     *state.preview_worker_tx.lock().unwrap() = Some(tx);
 
     std::thread::spawn(move || {
@@ -895,7 +914,7 @@ fn start_preview_worker(app_handle: tauri::AppHandle) {
             while let Ok(next_job) = rx.try_recv() {
                 job = next_job;
             }
-            
+
             let state = app_handle.state::<AppState>();
             if let Err(e) = process_preview_job(&app_handle, state, job) {
                 log::error!("Preview worker error: {}", e);
@@ -948,7 +967,7 @@ fn generate_uncropped_preview(
                 Ok(img) => img,
                 Err(e) => {
                     eprintln!("Failed to composite patches for uncropped preview: {}", e);
-                    loaded_image.image
+                    loaded_image.image.as_ref().clone()
                 }
             };
 
@@ -959,7 +978,7 @@ fn generate_uncropped_preview(
 
         let flip_horizontal = adjustments_clone["flipHorizontal"].as_bool().unwrap_or(false);
         let flip_vertical = adjustments_clone["flipVertical"].as_bool().unwrap_or(false);
-        
+
         let flipped_image = apply_flip(coarse_rotated_image, flip_horizontal, flip_vertical);
 
         let settings = load_settings(app_handle.clone()).unwrap_or_default();
@@ -1045,9 +1064,9 @@ fn generate_original_transformed_preview(
     let mut adjustments_clone = js_adjustments.clone();
     hydrate_adjustments(&state, &mut adjustments_clone);
 
-    let mut image_for_preview = loaded_image.image.clone();
+    let image_for_preview = loaded_image.image.clone();
     if loaded_image.is_raw {
-        apply_cpu_default_raw_processing(&mut image_for_preview);
+        apply_cpu_default_raw_processing(&mut image_for_preview.as_ref().clone());
     }
 
     let (transformed_full_res, _unscaled_crop_offset) =
@@ -1095,7 +1114,7 @@ async fn preview_geometry_transform(
             cached_image
         } else {
             let context = get_or_init_gpu_context(&state)?;
-            
+
             let original_image = {
                 let guard = state.original_image.lock().unwrap();
                 let loaded = guard.as_ref().ok_or("No image loaded")?;
@@ -1103,7 +1122,7 @@ async fn preview_geometry_transform(
             };
 
             let settings = load_settings(app_handle.clone()).unwrap_or_default();
-            let interactive_divisor = 1.5; 
+            let interactive_divisor = 1.5;
             let final_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
             let target_dim = (final_preview_dim as f32 / interactive_divisor) as u32;
 
@@ -1123,20 +1142,20 @@ async fn preview_geometry_transform(
                 for key in GEOMETRY_KEYS {
                     match *key {
                         "transformScale" |
-                        "lensDistortionAmount" | 
-                        "lensVignetteAmount" | 
+                        "lensDistortionAmount" |
+                        "lensVignetteAmount" |
                         "lensTcaAmount" => {
                             obj.insert(key.to_string(), serde_json::json!(100.0));
                         },
                         "lensDistortionParams" |
-                        "lensMaker" | 
+                        "lensMaker" |
                         "lensModel" => {
                             obj.insert(key.to_string(), serde_json::Value::Null);
                         },
-                        "lensDistortionEnabled" | 
-                        "lensTcaEnabled" | 
+                        "lensDistortionEnabled" |
+                        "lensTcaEnabled" |
                         "lensVignetteEnabled" => {
-                            obj.insert(key.to_string(), serde_json::json!(true)); 
+                            obj.insert(key.to_string(), serde_json::json!(true));
                         },
                         _ => {
                             obj.insert(key.to_string(), serde_json::json!(0.0));
@@ -1192,14 +1211,14 @@ async fn preview_geometry_transform(
             let gray_image = flipped_image.to_luma8();
             let mut visualization = flipped_image.to_rgba8();
             let edges = canny(&gray_image, 50.0, 100.0);
-            
+
             let min_dim = gray_image.width().min(gray_image.height());
-            
+
             let options = LineDetectionOptions {
-                vote_threshold: (min_dim as f32 * 0.24) as u32, 
+                vote_threshold: (min_dim as f32 * 0.24) as u32,
                 suppression_radius: 15,
             };
-            
+
             let lines = detect_lines(&edges, options);
 
             for line in lines {
@@ -1208,9 +1227,9 @@ async fn preview_geometry_transform(
                 let alignment_threshold = 0.5;
                 let is_vertical = angle_norm < alignment_threshold || angle_norm > (180.0 - alignment_threshold);
                 let is_horizontal = (angle_norm - 90.0).abs() < alignment_threshold;
-                
+
                 let color = if is_vertical || is_horizontal {
-                    Rgba([0, 255, 0, 255]) 
+                    Rgba([0, 255, 0, 255])
                 } else {
                     Rgba([255, 0, 0, 255])
                 };
@@ -1221,9 +1240,9 @@ async fn preview_geometry_transform(
                 let b = theta_rad.sin();
                 let x0 = a * r;
                 let y0 = b * r;
-                
+
                 let dist = (visualization.width().max(visualization.height()) * 2) as f32;
-                
+
                 let x1 = x0 + dist * (-b);
                 let y1 = y0 + dist * (a);
                 let x2 = x0 - dist * (-b);
@@ -1250,9 +1269,9 @@ async fn preview_geometry_transform(
     }).await.map_err(|e| e.to_string())?;
 
     let mut buf = Cursor::new(Vec::new());
-    
+
     final_image.to_rgb8().write_with_encoder(JpegEncoder::new_with_quality(&mut buf, 75)).map_err(|e| e.to_string())?;
-    
+
     let base64_str = general_purpose::STANDARD.encode(buf.get_ref());
     Ok(format!("data:image/jpeg;base64,{}", base64_str))
 }
@@ -1264,7 +1283,7 @@ fn get_full_image_for_processing(
     let loaded_image = original_image_lock
         .as_ref()
         .ok_or("No original image loaded")?;
-    Ok((loaded_image.image.clone(), loaded_image.is_raw))
+    Ok((loaded_image.image.clone().as_ref().clone(), loaded_image.is_raw))
 }
 
 #[tauri::command]
@@ -1328,14 +1347,67 @@ fn generate_fullscreen_preview(
     Ok(Response::new(buf.into_inner()))
 }
 
-fn process_image_for_export(
+fn calculate_resize_target(
+    current_w: u32,
+    current_h: u32,
+    resize_opts: &ResizeOptions,
+) -> (u32, u32) {
+    if resize_opts.dont_enlarge {
+        let exceeds = match resize_opts.mode {
+            ResizeMode::LongEdge => current_w.max(current_h) > resize_opts.value,
+            ResizeMode::ShortEdge => current_w.min(current_h) > resize_opts.value,
+            ResizeMode::Width => current_w > resize_opts.value,
+            ResizeMode::Height => current_h > resize_opts.value,
+        };
+        if !exceeds {
+            return (current_w, current_h);
+        }
+    }
+
+    let fix_width = match resize_opts.mode {
+        ResizeMode::LongEdge => current_w >= current_h,
+        ResizeMode::ShortEdge => current_w <= current_h,
+        ResizeMode::Width => true,
+        ResizeMode::Height => false,
+    };
+
+    let value = resize_opts.value;
+    if fix_width {
+        let h = (value as f32 * (current_h as f32 / current_w as f32)).round() as u32;
+        (value, h)
+    } else {
+        let w = (value as f32 * (current_w as f32 / current_h as f32)).round() as u32;
+        (w, value)
+    }
+}
+
+fn apply_export_resize_and_watermark(
+    mut image: DynamicImage,
+    export_settings: &ExportSettings,
+) -> Result<DynamicImage, String> {
+    if let Some(resize_opts) = &export_settings.resize {
+        let (current_w, current_h) = image.dimensions();
+        let (target_w, target_h) = calculate_resize_target(current_w, current_h, resize_opts);
+        
+        if target_w != current_w || target_h != current_h {
+            image = image.resize(target_w, target_h, imageops::FilterType::Lanczos3);
+        }
+    }
+
+    if let Some(watermark_settings) = &export_settings.watermark {
+        apply_watermark(&mut image, watermark_settings)?;
+    }
+    Ok(image)
+}
+
+fn process_image_for_export_pipeline(
     path: &str,
     base_image: &DynamicImage,
     js_adjustments: &Value,
-    export_settings: &ExportSettings,
     context: &GpuContext,
     state: &tauri::State<AppState>,
     is_raw: bool,
+    debug_tag: &str,
 ) -> Result<DynamicImage, String> {
     let (transformed_image, unscaled_crop_offset) =
         apply_all_transformations(&base_image, &js_adjustments);
@@ -1359,7 +1431,7 @@ fn process_image_for_export(
 
     let unique_hash = calculate_full_job_hash(path, js_adjustments);
 
-    let mut final_image = process_and_get_dynamic_image(
+    process_and_get_dynamic_image(
         &context,
         &state,
         &transformed_image,
@@ -1367,71 +1439,82 @@ fn process_image_for_export(
         all_adjustments,
         &mask_bitmaps,
         lut,
+        debug_tag,
+    )
+}
+
+fn save_image_with_metadata(
+    image: &DynamicImage,
+    output_path: &std::path::Path,
+    source_path_str: &str,
+    export_settings: &ExportSettings,
+) -> Result<(), String> {
+    let extension = output_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let mut image_bytes =
+        encode_image_to_bytes(image, &extension, export_settings.jpeg_quality)?;
+
+    exif_processing::write_image_with_metadata(
+        &mut image_bytes,
+        source_path_str,
+        &extension,
+        export_settings.keep_metadata,
+        export_settings.strip_gps,
+    )?;
+
+    fs::write(output_path, image_bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn process_image_for_export(
+    path: &str,
+    base_image: &DynamicImage,
+    js_adjustments: &Value,
+    export_settings: &ExportSettings,
+    context: &GpuContext,
+    state: &tauri::State<AppState>,
+    is_raw: bool,
+) -> Result<DynamicImage, String> {
+    let processed_image = process_image_for_export_pipeline(
+        path,
+        base_image,
+        js_adjustments,
+        context,
+        state,
+        is_raw,
         "process_image_for_export",
     )?;
 
-    if let Some(resize_opts) = &export_settings.resize {
-        let (current_w, current_h) = final_image.dimensions();
-        let should_resize = if resize_opts.dont_enlarge {
-            match resize_opts.mode {
-                ResizeMode::LongEdge => current_w.max(current_h) > resize_opts.value,
-                ResizeMode::ShortEdge => current_w.min(current_h) > resize_opts.value,
-                ResizeMode::Width => current_w > resize_opts.value,
-                ResizeMode::Height => current_h > resize_opts.value,
-            }
-        } else {
-            true
-        };
+    apply_export_resize_and_watermark(processed_image, export_settings)
+}
 
-        if should_resize {
-            final_image = match resize_opts.mode {
-                ResizeMode::LongEdge => {
-                    let (w, h) = if current_w > current_h {
-                        (
-                            resize_opts.value,
-                            (resize_opts.value as f32 * (current_h as f32 / current_w as f32))
-                                .round() as u32,
-                        )
-                    } else {
-                        (
-                            (resize_opts.value as f32 * (current_w as f32 / current_h as f32))
-                                .round() as u32,
-                            resize_opts.value,
-                        )
-                    };
-                    final_image.resize(w, h, imageops::FilterType::Lanczos3)
-                }
-                ResizeMode::ShortEdge => {
-                    let (w, h) = if current_w < current_h {
-                        (
-                            resize_opts.value,
-                            (resize_opts.value as f32 * (current_h as f32 / current_w as f32))
-                                .round() as u32,
-                        )
-                    } else {
-                        (
-                            (resize_opts.value as f32 * (current_w as f32 / current_h as f32))
-                                .round() as u32,
-                            resize_opts.value,
-                        )
-                    };
-                    final_image.resize(w, h, imageops::FilterType::Lanczos3)
-                }
-                ResizeMode::Width => {
-                    final_image.resize(resize_opts.value, u32::MAX, imageops::FilterType::Lanczos3)
-                }
-                ResizeMode::Height => {
-                    final_image.resize(u32::MAX, resize_opts.value, imageops::FilterType::Lanczos3)
-                }
-            };
-        }
+fn build_single_mask_adjustments(all: &AllAdjustments, mask_index: usize) -> AllAdjustments {
+    let mut single = AllAdjustments {
+        global: all.global,
+        mask_adjustments: all.mask_adjustments,
+        mask_count: 1,
+        tile_offset_x: all.tile_offset_x,
+        tile_offset_y: all.tile_offset_y,
+        mask_atlas_cols: all.mask_atlas_cols,
+    };
+    single.mask_adjustments[0] = all.mask_adjustments[mask_index];
+    for i in 1..single.mask_adjustments.len() {
+        single.mask_adjustments[i] = Default::default();
     }
+    single
+}
 
-    if let Some(watermark_settings) = &export_settings.watermark {
-        apply_watermark(&mut final_image, watermark_settings)?;
-    }
-
-    Ok(final_image)
+fn encode_grayscale_to_png(bitmap: &GrayImage) -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    let mut cursor = Cursor::new(&mut buf);
+    bitmap
+        .write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(buf)
 }
 
 fn encode_image_to_bytes(
@@ -1471,6 +1554,78 @@ fn encode_image_to_bytes(
     Ok(image_bytes)
 }
 
+fn export_masks_for_image(
+    base_image: &DynamicImage,
+    js_adjustments: &Value,
+    export_settings: &ExportSettings,
+    output_path_obj: &std::path::Path,
+    source_path_str: &str,
+    context: &Arc<GpuContext>,
+    state: &tauri::State<AppState>,
+    is_raw: bool,
+) -> Result<(), String> {
+    let (transformed_image, unscaled_crop_offset) =
+        apply_all_transformations(&base_image, &js_adjustments);
+    let (img_w, img_h) = transformed_image.dimensions();
+    let mask_definitions: Vec<MaskDefinition> = js_adjustments
+        .get("masks")
+        .and_then(|m| serde_json::from_value(m.clone()).ok())
+        .unwrap_or_else(Vec::new);
+    let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
+        .iter()
+        .filter_map(|def| generate_mask_bitmap(def, img_w, img_h, 1.0, unscaled_crop_offset))
+        .collect();
+
+    if !mask_bitmaps.is_empty() {
+        let all_adjustments = get_all_adjustments_from_json(&js_adjustments, is_raw);
+        let lut_path = js_adjustments["lutPath"].as_str();
+        let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
+        let unique_hash = calculate_full_job_hash(&source_path_str, &js_adjustments);
+        let output_dir = output_path_obj.parent().unwrap_or_else(|| output_path_obj.as_ref());
+        let stem = output_path_obj
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("export");
+        let extension = output_path_obj.extension().and_then(|s| s.to_str()).unwrap_or("jpg");
+
+        for (i, _) in mask_bitmaps.iter().enumerate() {
+            let single_adjustments = build_single_mask_adjustments(&all_adjustments, i);
+            let full_white_mask = ImageBuffer::from_fn(img_w, img_h, |_, _| Luma([255u8]));
+            let single_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = vec![full_white_mask];
+            
+            let processed = process_and_get_dynamic_image(
+                &context,
+                &state,
+                &transformed_image,
+                unique_hash,
+                single_adjustments,
+                &single_bitmaps,
+                lut.clone(),
+                "export_mask_image",
+            )?;
+            
+            let with_options = apply_export_resize_and_watermark(processed, &export_settings)?;
+            let (out_w, out_h) = with_options.dimensions();
+            
+            let alpha_resized = imageops::resize(
+                &mask_bitmaps[i],
+                out_w,
+                out_h,
+                imageops::FilterType::Lanczos3,
+            );
+
+            let mask_image_path = output_dir.join(format!("{}_mask_{}_image.{}", stem, i, extension));
+            let mask_alpha_path = output_dir.join(format!("{}_mask_{}_alpha.png", stem, i));
+
+            save_image_with_metadata(&with_options, &mask_image_path, &source_path_str, &export_settings)?;
+
+            let alpha_bytes = encode_grayscale_to_png(&alpha_resized)?;
+            fs::write(&mask_alpha_path, alpha_bytes).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn export_image(
     original_path: String,
@@ -1497,10 +1652,17 @@ async fn export_image(
             let base_image = composite_patches_on_image(&original_image_data, &js_adjustments)
                 .map_err(|e| format!("Failed to composite AI patches for export: {}", e))?;
 
+            let mut main_export_adjustments = js_adjustments.clone();
+            if export_settings.export_masks {
+                if let Some(obj) = main_export_adjustments.as_object_mut() {
+                    obj.insert("masks".to_string(), serde_json::json!([]));
+                }
+            }
+
             let final_image = process_image_for_export(
                 &source_path_str,
                 &base_image,
-                &js_adjustments,
+                &main_export_adjustments,
                 &export_settings,
                 &context,
                 &state,
@@ -1508,24 +1670,20 @@ async fn export_image(
             )?;
 
             let output_path_obj = std::path::Path::new(&output_path);
-            let extension = output_path_obj
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_lowercase();
+            save_image_with_metadata(&final_image, output_path_obj, &source_path_str, &export_settings)?;
 
-            let mut image_bytes =
-                encode_image_to_bytes(&final_image, &extension, export_settings.jpeg_quality)?;
-
-            exif_processing::write_image_with_metadata(
-                &mut image_bytes,
-                &source_path_str,
-                &extension,
-                export_settings.keep_metadata,
-                export_settings.strip_gps,
-            )?;
-
-            fs::write(&output_path, image_bytes).map_err(|e| e.to_string())?;
+            if export_settings.export_masks {
+                export_masks_for_image(
+                    &base_image,
+                    &js_adjustments,
+                    &export_settings,
+                    output_path_obj,
+                    &source_path_str,
+                    &context,
+                    &state,
+                    is_raw
+                )?;
+            }
 
             Ok(())
         })();
@@ -1565,8 +1723,8 @@ async fn batch_export_images(
     let progress_counter = Arc::new(AtomicUsize::new(0));
 
     let available_cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-    let num_threads = (available_cores / 2).clamp(1, 4); 
-    
+    let num_threads = (available_cores / 2).clamp(1, 4);
+
     log::info!("Starting batch export. System cores: {}, Export threads: {}", available_cores, num_threads);
 
     let task = tokio::spawn(async move {
@@ -1603,7 +1761,6 @@ async fn batch_export_images(
                     }
 
                     let current_progress = progress_counter.fetch_add(1, Ordering::SeqCst) + 1;
-
                     let _ = app_handle.emit(
                         "batch-export-progress",
                         serde_json::json!({
@@ -1624,7 +1781,7 @@ async fn batch_export_images(
                         } else {
                             ImageMetadata::default()
                         };
-                        let mut js_adjustments = metadata.adjustments; 
+                        let mut js_adjustments = metadata.adjustments;
                         hydrate_adjustments(&state, &mut js_adjustments);
                         let is_raw = is_raw_file(&source_path_str);
 
@@ -1659,10 +1816,17 @@ async fn batch_export_images(
                             }
                         };
 
+                        let mut main_export_adjustments = js_adjustments.clone();
+                        if export_settings.export_masks {
+                            if let Some(obj) = main_export_adjustments.as_object_mut() {
+                                obj.insert("masks".to_string(), serde_json::json!([]));
+                            }
+                        }
+
                         let final_image = process_image_for_export(
                             &source_path_str,
                             &base_image,
-                            &js_adjustments,
+                            &main_export_adjustments,
                             &export_settings,
                             &context,
                             &state,
@@ -1686,22 +1850,20 @@ async fn batch_export_images(
                         let new_filename = format!("{}.{}", new_stem, output_format);
                         let output_path = output_folder_path.join(new_filename);
 
-                        let mut image_bytes = encode_image_to_bytes(
-                            &final_image,
-                            &output_format,
-                            export_settings.jpeg_quality,
-                        )?;
-
-                        exif_processing::write_image_with_metadata(
-                            &mut image_bytes,
-                            &source_path_str,
-                            &output_format,
-                            export_settings.keep_metadata,
-                            export_settings.strip_gps,
-                        )?;
-
-                        fs::write(&output_path, image_bytes)
-                            .map_err(|e| format!("Failed to write output: {}", e))?;
+                        save_image_with_metadata(&final_image, &output_path, &source_path_str, &export_settings)?;
+                        
+                        if export_settings.export_masks {
+                            export_masks_for_image(
+                                &base_image,
+                                &js_adjustments,
+                                &export_settings,
+                                &output_path,
+                                &source_path_str,
+                                &context,
+                                &state,
+                                is_raw
+                            )?;
+                        }
 
                         Ok(())
                     })();
@@ -1790,15 +1952,11 @@ async fn estimate_export_size(
             )
         } else {
             drop(cached_preview_lock);
-            let (base, scale, offset) =
-                generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?;
-            (base, scale, offset)
+            generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?
         }
     } else {
         drop(cached_preview_lock);
-        let (base, scale, offset) =
-            generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?;
-        (base, scale, offset)
+        generate_transformed_preview(&loaded_image, &adjustments_clone, &app_handle)?
     };
 
     let (img_w, img_h) = preview_image.dimensions();
@@ -1817,7 +1975,9 @@ async fn estimate_export_size(
         .filter_map(|def| generate_mask_bitmap(def, img_w, img_h, scale, scaled_crop_offset))
         .collect();
 
-    let all_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
+    let mut all_adjustments = get_all_adjustments_from_json(&adjustments_clone, is_raw);
+    all_adjustments.global.show_clipping = 0;
+
     let lut_path = adjustments_clone["lutPath"].as_str();
     let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
     let unique_hash = calculate_full_job_hash(&loaded_image.path, &adjustments_clone).wrapping_add(1);
@@ -1842,63 +2002,13 @@ async fn estimate_export_size(
 
     let (transformed_full_res, _unscaled_crop_offset) =
         apply_all_transformations(&loaded_image.image, &adjustments_clone);
-    let (mut final_full_w, mut final_full_h) = transformed_full_res.dimensions();
+    let (full_w, full_h) = transformed_full_res.dimensions();
 
-    if let Some(resize_opts) = &export_settings.resize {
-        let should_resize = if resize_opts.dont_enlarge {
-            match resize_opts.mode {
-                ResizeMode::LongEdge => final_full_w.max(final_full_h) > resize_opts.value,
-                ResizeMode::ShortEdge => final_full_w.min(final_full_h) > resize_opts.value,
-                ResizeMode::Width => final_full_w > resize_opts.value,
-                ResizeMode::Height => final_full_h > resize_opts.value,
-            }
-        } else {
-            true
-        };
-
-        if should_resize {
-            match resize_opts.mode {
-                ResizeMode::LongEdge => {
-                    if final_full_w > final_full_h {
-                        final_full_h = (resize_opts.value as f32
-                            * (final_full_h as f32 / final_full_w as f32))
-                            .round() as u32;
-                        final_full_w = resize_opts.value;
-                    } else {
-                        final_full_w = (resize_opts.value as f32
-                            * (final_full_w as f32 / final_full_h as f32))
-                            .round() as u32;
-                        final_full_h = resize_opts.value;
-                    }
-                }
-                ResizeMode::ShortEdge => {
-                    if final_full_w < final_full_h {
-                        final_full_h = (resize_opts.value as f32
-                            * (final_full_h as f32 / final_full_w as f32))
-                            .round() as u32;
-                        final_full_w = resize_opts.value;
-                    } else {
-                        final_full_w = (resize_opts.value as f32
-                            * (final_full_w as f32 / final_full_h as f32))
-                            .round() as u32;
-                        final_full_h = resize_opts.value;
-                    }
-                }
-                ResizeMode::Width => {
-                    final_full_h = (resize_opts.value as f32
-                        * (final_full_h as f32 / final_full_w as f32))
-                        .round() as u32;
-                    final_full_w = resize_opts.value;
-                }
-                ResizeMode::Height => {
-                    final_full_w = (resize_opts.value as f32
-                        * (final_full_w as f32 / final_full_h as f32))
-                        .round() as u32;
-                    final_full_h = resize_opts.value;
-                }
-            };
-        }
-    }
+    let (final_full_w, final_full_h) = if let Some(resize_opts) = &export_settings.resize {
+        calculate_resize_target(full_w, full_h, resize_opts)
+    } else {
+        (full_w, full_h)
+    };
 
     let (processed_preview_w, processed_preview_h) = processed_preview.dimensions();
 
@@ -1961,38 +2071,13 @@ async fn estimate_batch_export_size(
 
     let base_image_preview = downscale_f32_image(&original_image, ESTIMATE_DIM, ESTIMATE_DIM);
 
-    let (transformed_preview, unscaled_crop_offset) =
-        apply_all_transformations(&base_image_preview, &js_adjustments);
-    let (preview_w, preview_h) = transformed_preview.dimensions();
-
-    let mask_definitions: Vec<MaskDefinition> = js_adjustments
-        .get("masks")
-        .and_then(|m| serde_json::from_value(m.clone()).ok())
-        .unwrap_or_else(Vec::new);
-
-    let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
-        .iter()
-        .filter_map(|def| {
-            generate_mask_bitmap(def, preview_w, preview_h, 1.0, unscaled_crop_offset)
-        })
-        .collect();
-
-    let mut all_adjustments = get_all_adjustments_from_json(&js_adjustments, is_raw);
-    all_adjustments.global.show_clipping = 0;
-
-    let lut_path = js_adjustments["lutPath"].as_str();
-    let lut = lut_path.and_then(|p| get_or_load_lut(&state, p).ok());
-
-    let unique_hash = calculate_full_job_hash(&source_path_str, &js_adjustments).wrapping_add(1);
-
-    let processed_preview = process_and_get_dynamic_image(
+    let processed_preview = process_image_for_export_pipeline(
+        &source_path_str,
+        &base_image_preview,
+        &js_adjustments,
         &context,
         &state,
-        &transformed_preview,
-        unique_hash,
-        all_adjustments,
-        &mask_bitmaps,
-        lut,
+        is_raw,
         "estimate_batch_export_size",
     )?;
 
@@ -2003,65 +2088,15 @@ async fn estimate_batch_export_size(
     )?;
     let single_image_estimated_size = preview_bytes.len();
 
-    let (transformed_full_res, _unscaled_crop_offset) =
+    let (transformed_full_res, _) =
         apply_all_transformations(&original_image, &js_adjustments);
-    let (mut final_full_w, mut final_full_h) = transformed_full_res.dimensions();
+    let (full_w, full_h) = transformed_full_res.dimensions();
 
-    if let Some(resize_opts) = &export_settings.resize {
-        let should_resize = if resize_opts.dont_enlarge {
-            match resize_opts.mode {
-                ResizeMode::LongEdge => final_full_w.max(final_full_h) > resize_opts.value,
-                ResizeMode::ShortEdge => final_full_w.min(final_full_h) > resize_opts.value,
-                ResizeMode::Width => final_full_w > resize_opts.value,
-                ResizeMode::Height => final_full_h > resize_opts.value,
-            }
-        } else {
-            true
-        };
-
-        if should_resize {
-            match resize_opts.mode {
-                ResizeMode::LongEdge => {
-                    if final_full_w > final_full_h {
-                        final_full_h = (resize_opts.value as f32
-                            * (final_full_h as f32 / final_full_w as f32))
-                            .round() as u32;
-                        final_full_w = resize_opts.value;
-                    } else {
-                        final_full_w = (resize_opts.value as f32
-                            * (final_full_w as f32 / final_full_h as f32))
-                            .round() as u32;
-                        final_full_h = resize_opts.value;
-                    }
-                }
-                ResizeMode::ShortEdge => {
-                    if final_full_w < final_full_h {
-                        final_full_h = (resize_opts.value as f32
-                            * (final_full_h as f32 / final_full_w as f32))
-                            .round() as u32;
-                        final_full_w = resize_opts.value;
-                    } else {
-                        final_full_w = (resize_opts.value as f32
-                            * (final_full_w as f32 / final_full_h as f32))
-                            .round() as u32;
-                        final_full_h = resize_opts.value;
-                    }
-                }
-                ResizeMode::Width => {
-                    final_full_h = (resize_opts.value as f32
-                        * (final_full_h as f32 / final_full_w as f32))
-                        .round() as u32;
-                    final_full_w = resize_opts.value;
-                }
-                ResizeMode::Height => {
-                    final_full_w = (resize_opts.value as f32
-                        * (final_full_w as f32 / final_full_h as f32))
-                        .round() as u32;
-                    final_full_h = resize_opts.value;
-                }
-            };
-        }
-    }
+    let (final_full_w, final_full_h) = if let Some(resize_opts) = &export_settings.resize {
+        calculate_resize_target(full_w, full_h, resize_opts)
+    } else {
+        (full_w, full_h)
+    };
 
     let (processed_preview_w, processed_preview_h) = processed_preview.dimensions();
 
@@ -2875,6 +2910,131 @@ async fn save_panorama(
 }
 
 #[tauri::command]
+async fn merge_hdr(
+    paths: Vec<String>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if paths.len() < 2 {
+        return Err("Please select at least two images to merge.".to_string());
+    }
+
+    let hdr_result_handle = state.hdr_result.clone();
+
+    let images: Vec<HDRInput> = paths
+        .iter()
+        .map(|path| {
+            let _ = app_handle.emit(
+                "hdr-progress",
+                format!(
+                    "Processing '{}'",
+                    Path::new(path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                ),
+            );
+
+            let file_bytes =
+                fs::read(path).map_err(|e| format!("Failed to read image {}: {}", path, e))?;
+            let dynamic_image = load_base_image_from_bytes(&file_bytes, path, false, 2.5, None)
+                .map_err(|e| format!("Failed to load image {}: {}", path, e))?;
+
+            let gains = match read_iso(&path, &file_bytes) {
+                None => {
+                    return Err(format!(
+                        "Image {} is missing 'PhotographicSensitivity' in EXIF data",
+                        path
+                    ));
+                }
+                Some(gains) => gains as f32,
+            };
+            log::info!("Read image {} with gains: {}", path, gains);
+            let exposure = match read_exposure_time_secs(&path, &file_bytes) {
+                None => {
+                    return Err(format!(
+                        "Image {} is missing 'ExposureTime' in EXIF data",
+                        path
+                    ));
+                }
+                Some(exposure) => exposure,
+            };
+            log::info!("Read image {} with exposure: {}", path, exposure);
+
+            HDRInput::with_image(&dynamic_image, Duration::from_secs_f32(exposure), gains)
+                .map_err(|e| format!("Failed to prepare HDR input for image {}: {}", path, e))
+        })
+        .collect::<Result<Vec<HDRInput>, String>>()?;
+
+    log::info!("Starting HDR merge of {} images", images.len());
+    let hdr_merged = hdr_merge_images(&mut images.into()).map_err(|e| e.to_string())?;
+    log::info!("HDR merge completed");
+
+    let mut buf = Cursor::new(Vec::new());
+
+    if let Err(e) = hdr_merged.to_rgb8().write_to(&mut buf, ImageFormat::Png) {
+        return Err(format!("Failed to encode hdr preview: {}", e));
+    }
+
+    let base64_str = general_purpose::STANDARD.encode(buf.get_ref());
+    let final_base64 = format!("data:image/png;base64,{}", base64_str);
+
+    let _ = app_handle.emit("hdr-progress", "Creating preview...");
+
+    *hdr_result_handle.lock().unwrap() = Some(hdr_merged);
+
+    let _ = app_handle.emit(
+        "hdr-complete",
+        serde_json::json!({
+            "base64": final_base64,
+        }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_hdr(
+    first_path_str: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let hdr_image = state.hdr_result.lock().unwrap().take().ok_or_else(|| {
+        "No hdr image found in memory to save. It might have already been saved.".to_string()
+    })?;
+
+    let (first_path, _) = parse_virtual_path(&first_path_str);
+    let parent_dir = first_path
+        .parent()
+        .ok_or_else(|| "Could not determine parent directory of the first image.".to_string())?;
+    let stem = first_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("hdr");
+
+    let (output_filename, image_to_save): (String, DynamicImage) = if hdr_image.color().has_alpha()
+    {
+        (
+            format!("{}_Hdr.png", stem),
+            DynamicImage::ImageRgba8(hdr_image.to_rgba8()),
+        )
+    } else if hdr_image.as_rgb32f().is_some() {
+        (format!("{}_Hdr.tiff", stem), hdr_image)
+    } else {
+        (
+            format!("{}_Hdr.png", stem),
+            DynamicImage::ImageRgb8(hdr_image.to_rgb8()),
+        )
+    };
+
+    let output_path = parent_dir.join(output_filename);
+
+    image_to_save
+        .save(&output_path)
+        .map_err(|e| format!("Failed to save hdr image: {}", e))?;
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 async fn apply_denoising(
     path: String,
     intensity: f32,
@@ -2928,7 +3088,7 @@ async fn save_denoised_image(
 
     let (output_filename, image_to_save): (String, DynamicImage) = if is_raw {
         let filename = format!("{}_Denoised.tiff", stem);
-        (filename, denoised_image) 
+        (filename, denoised_image)
     } else {
         let filename = format!("{}_Denoised.png", stem);
         (filename, DynamicImage::ImageRgb8(denoised_image.to_rgb8()))
@@ -3167,11 +3327,7 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
             || "at an unknown location".to_string(),
             |loc| format!("at {}:{}:{}", loc.file(), loc.line(), loc.column()),
         );
-        log::error!(
-            "PANIC! {} - {}",
-            location,
-            message.trim()
-        );
+        log::error!("PANIC! {} - {}", location, message.trim());
     }));
 
     log::info!(
@@ -3182,10 +3338,7 @@ fn setup_logging(app_handle: &tauri::AppHandle) {
 
 #[tauri::command]
 fn get_log_file_path(app_handle: tauri::AppHandle) -> Result<String, String> {
-    let log_dir = app_handle
-        .path()
-        .app_log_dir()
-        .map_err(|e| e.to_string())?;
+    let log_dir = app_handle.path().app_log_dir().map_err(|e| e.to_string())?;
     let log_file_path = log_dir.join("app.log");
     Ok(log_file_path.to_string_lossy().to_string())
 }
@@ -3293,7 +3446,7 @@ fn main() {
                     log::info!("Applied Linux GPU optimizations.");
                 }
             }
-            
+
             start_preview_worker(app_handle.clone());
 
             let window_cfg = app.config().app.windows.get(0).unwrap().clone();
@@ -3323,6 +3476,7 @@ fn main() {
             ai_state: Mutex::new(None),
             ai_init_lock: TokioMutex::new(()),
             export_task_handle: Mutex::new(None),
+            hdr_result: Arc::new(Mutex::new(None)),
             panorama_result: Arc::new(Mutex::new(None)),
             denoise_result: Arc::new(Mutex::new(None)),
             negative_conversion_result: Arc::new(Mutex::new(None)),
@@ -3365,6 +3519,8 @@ fn main() {
             save_collage,
             stitch_panorama,
             save_panorama,
+            merge_hdr,
+            save_hdr,
             apply_denoising,
             save_denoised_image,
             load_and_parse_lut,

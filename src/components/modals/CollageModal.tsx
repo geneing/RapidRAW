@@ -545,7 +545,7 @@ export default function CollageModal({ isOpen, onClose, onSave, sourceImages }: 
         <div>
           <h4 className="text-sm font-semibold mb-3 flex items-center justify-between">
             <span className="flex items-center gap-2"><LayoutTemplate size={16} /> Layout</span>
-            <button onClick={handleShuffleImages} title="Shuffle Images" className="p-1.5 rounded-md hover:bg-surface">
+            <button onClick={handleShuffleImages} data-tooltip="Shuffle Images" className="p-1.5 rounded-md hover:bg-surface">
               <Shuffle size={16} />
             </button>
           </h4>

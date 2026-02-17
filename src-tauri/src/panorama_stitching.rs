@@ -46,7 +46,10 @@ pub struct MatchInfo {
     pub inliers: usize,
 }
 
-pub fn stitch_images(image_paths: Vec<String>, app_handle: AppHandle) -> Result<DynamicImage, String> {
+pub fn stitch_images(
+    image_paths: Vec<String>,
+    app_handle: AppHandle,
+) -> Result<DynamicImage, String> {
     if image_paths.len() < 2 {
         return Err("At least two images are required for a panorama.".to_string());
     }

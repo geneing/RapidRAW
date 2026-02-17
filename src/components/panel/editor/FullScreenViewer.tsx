@@ -95,7 +95,7 @@ const FullScreenViewer = memo(
             e.stopPropagation();
             handleClose();
           }}
-          title="Close (Esc or F)"
+          data-tooltip="Close (Esc or F)"
         >
           <X size={32} />
         </button>

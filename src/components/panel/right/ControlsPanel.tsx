@@ -167,7 +167,7 @@ export default function Controls({
             className="p-2 rounded-full hover:bg-surface disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             disabled={!selectedImage}
             onClick={handleAutoAdjustments}
-            title="Auto Adjust Image"
+            data-tooltip="Auto Adjust Image"
           >
             <Aperture size={18} />
           </button>
@@ -175,7 +175,7 @@ export default function Controls({
             className="p-2 rounded-full hover:bg-surface disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             disabled={!selectedImage}
             onClick={handleResetAdjustments}
-            title="Reset Adjustments"
+            data-tooltip="Reset Adjustments"
           >
             <RotateCcw size={18} />
           </button>

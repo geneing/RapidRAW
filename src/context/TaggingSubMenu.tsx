@@ -93,7 +93,7 @@ export default function TaggingSubMenu({
                   animate="visible"
                   exit="exit"
                   onClick={() => handleRemoveTag(tagItem)}
-                  title={`Remove tag "${tagItem.tag}"`}
+                  data-tooltip={`Remove tag "${tagItem.tag}"`}
                   className="flex items-center gap-1 bg-bg-primary text-text-primary text-xs font-medium px-2 py-1 rounded group cursor-pointer"
                 >
                   <span>{tagItem.tag}</span>
@@ -131,7 +131,7 @@ export default function TaggingSubMenu({
         <button
           onClick={() => handleAddTag(inputValue)}
           className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded-full text-text-secondary hover:text-text-primary hover:bg-surface"
-          title="Add tag"
+          data-tooltip="Add tag"
         >
           <Plus size={16} />
         </button>

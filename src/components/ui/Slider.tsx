@@ -271,7 +271,7 @@ const Slider = ({
               className="text-sm text-text-primary w-full text-right select-none cursor-text"
               onClick={handleValueClick}
               onDoubleClick={handleReset}
-              title={`Click to edit`}
+              data-tooltip={`Click to edit`}
             >
               {decimalPlaces > 0 && numericValue === 0 ? '0' : numericValue.toFixed(decimalPlaces)}
             </span>

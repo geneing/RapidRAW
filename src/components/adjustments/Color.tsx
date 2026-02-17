@@ -332,7 +332,7 @@ export default function ColorPanel({
                   ? 'bg-accent text-button-text'
                   : 'hover:bg-bg-secondary text-text-secondary'
               }`}
-              title="White Balance Picker"
+              data-tooltip="White Balance Picker"
             >
               <Pipette size={16} />
             </button>

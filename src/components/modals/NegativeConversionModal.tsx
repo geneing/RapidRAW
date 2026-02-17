@@ -191,7 +191,7 @@ export default function NegativeConversionModal({
         <h2 className="text-xl font-bold text-primary text-shadow-shiny">Negative Conversion</h2>
         <button
           onClick={() => { setParams(DEFAULT_PARAMS); updatePreview(DEFAULT_PARAMS); }}
-          title="Reset"
+          data-tooltip="Reset"
           className="p-2 rounded-full hover:bg-surface transition-colors"
         >
           <RotateCcw size={18} />
@@ -284,14 +284,14 @@ export default function NegativeConversionModal({
                 )}
 
                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-black/70 backdrop-blur-md p-1.5 rounded-full border border-white/10 shadow-xl z-20 pointer-events-auto" onMouseDown={e => e.stopPropagation()}>
-                    <button onClick={() => setZoom(z => Math.max(0.1, z - 0.25))} className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors" title="Zoom Out">
+                    <button onClick={() => setZoom(z => Math.max(0.1, z - 0.25))} className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors" data-tooltip="Zoom Out">
                         <ZoomOut size={18} />
                     </button>
                     <span className="text-xs font-mono text-white/90 w-12 text-center select-none pointer-events-none">{Math.round(zoom * 100)}%</span>
-                    <button onClick={() => setZoom(z => Math.min(8, z + 0.25))} className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors" title="Zoom In">
+                    <button onClick={() => setZoom(z => Math.min(8, z + 0.25))} className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors" data-tooltip="Zoom In">
                         <ZoomIn size={18} />
                     </button>
-                    <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors" title="Reset View">
+                    <button onClick={() => { setZoom(1); setPan({x:0, y:0}); }} className="p-2 text-white/60 hover:bg-white/10 hover:text-white rounded-full transition-colors" data-tooltip="Reset View">
                         <Maximize size={16} />
                     </button>
                     <div className="w-px h-5 bg-white/20 mx-1"></div>
@@ -300,7 +300,7 @@ export default function NegativeConversionModal({
                         onMouseUp={() => setIsCompareActive(false)} 
                         onMouseLeave={() => setIsCompareActive(false)}
                         className={clsx('p-2 rounded-full transition-colors select-none', isCompareActive ? 'bg-accent text-button-text' : 'text-white/60 hover:bg-white/10 hover:text-white')}
-                        title="Hold to View Original"
+                        data-tooltip="Hold to View Original"
                     >
                         {isCompareActive ? <Eye size={18} /> : <EyeOff size={18} />}
                     </button>

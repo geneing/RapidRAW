@@ -54,28 +54,30 @@ I started developing this project as a personal challenge when I was 18. My goal
 <summary><strong>For Who Is This?</strong></summary>
 RapidRAW is for photographers who love to edit their photos in a <strong>clean, fast, and simple workflow</strong>. It prioritizes speed, a beautiful user interface, and powerful tools that let you achieve your creative color vision quickly.
 <br><br>
-It is <strong>not</strong> for users who seek absolute, perfect color accuracy. While the results are great for most purposes, the focus is on a fluid, creative process rather than perfect color precision.
-<br><br>
 RapidRAW is still in active development and isn't yet as polished as mature tools like Darktable, RawTherapee, or Adobe Lightroom®. Right now, the focus is on building a fast, enjoyable core editing experience. You may encounter bugs - if you do, please report them so I can fix them :) Your feedback really helps!
 <br><br>
 </details>
 <details>
 <summary><strong>Recent Changes</strong></summary>
 
+*   **2026-02-13:** Optimized live previews, instant metadata loading and new jpeg encoder
+*   **2026-02-13:** Added ability to merge multiple bracketed images to a HDR
+*   **2026-02-12:** Straight brush mask lines using shift click and enhanced Lensfun DB parsing
+*   **2026-02-10:** Improved image loading performance
 *   **2026-02-06:** Refactored negative conversion logic using characteristic curves.
 *   **2026-02-04:** Global tooltips & major UI polish
 *   **2026-02-03:** New creative effects: Glow, Halation & Lens Flares
 *   **2026-01-31:** Accurate color noise reduction for RAW images & improved image loading
 *   **2026-01-30:** Enhanced Lensfun DB parsing and improved lens matching logic
 *   **2026-01-29:** Add cross-channel copy/paste & flat-line clipping logic for curves
-*   **2026-01-26:** Favorite lens saving, improved rotation controls (finer grid), better local contrast adjustments
-*   **2026-01-25:** Filmstrip performance boost, improved sorting, lens distortion fixes for AI masks & crop
-*   **2026-01-24:** Added automatic lens, TCA & vignette correction using lensfun
-*   **2026-01-22:** Improved and centralized EXIF data handling for greater accuracy and support
 
 <details>
 <summary><strong>Expand further</strong></summary>
 
+*   **2026-01-26:** Favorite lens saving, improved rotation controls (finer grid), better local contrast adjustments
+*   **2026-01-25:** Filmstrip performance boost, improved sorting, lens distortion fixes for AI masks & crop
+*   **2026-01-24:** Added automatic lens, TCA & vignette correction using lensfun
+*   **2026-01-22:** Improved and centralized EXIF data handling for greater accuracy and support
 *   **2026-01-21:** Inpainting now works correctly on images with geometry transformations
 *   **2026-01-20:** Export preset management for saving export settings 
 *   **2026-01-19:** Preload library for faster startup & automatic geometry transformation helper lines
@@ -494,18 +496,13 @@ See [#306](https://github.com/CyberTimon/RapidRAW/issues/306) for more informati
 
 ## Contributing
 
-I’m really grateful for any contributions you make to RapidRAW! Whether you’re reporting a bug, suggesting a new feature, or submitting a pull request - your input helps shape the project and makes it better for everyone. Don’t hesitate to open an issue or start a discussion to share your ideas.  
+I’m really grateful for any contributions you make to RapidRAW! Whether you’re reporting a bug, suggesting a new feature, or submitting a pull request - your input helps shape the project and makes it better for everyone. Don’t hesitate to open an issue or share your ideas.  
 
 ### Image format issues
 If your camera’s RAW files aren’t supported, please open a issue here first: [rawler issues](https://github.com/dnglab/dnglab/issues). Once support is added in rawler, create a issue for RapidRAW so I can update the packages and keep everything in sync.  
 
 ### Feature requests
 Got an idea? Add it in the discussion tab with the **"idea"** tag. This way, the community can vote on features they'd love to see, and I can focus on the most impactful ones.  
-
-### Stale issues
-To keep things tidy and relevant, please update your issue if the issue still exists with the latest release. Issues with no updates after 4-6 weeks will be closed as stale.
-
-Thank you for contributing your time and ideas - every bit of feedback makes RapidRAW a stronger and more useful project!  
 
 ## Special Thanks
 

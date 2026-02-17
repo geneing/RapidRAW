@@ -613,7 +613,7 @@ export default function AIPanel({
           <button
             className="p-2 rounded-full hover:bg-surface transition-colors"
             onClick={handleResetAllAiEdits}
-            title="Reset Inpainting"
+            data-tooltip="Reset Inpainting"
           >
             <RotateCcw size={18} />
           </button>
@@ -838,7 +838,7 @@ function DraggableGridItem({ maskType, isGenerating, onClick, activePatchContain
       className={`bg-surface text-text-primary rounded-lg p-2 flex flex-col items-center justify-center gap-1.5 aspect-square transition-colors 
               ${maskType.disabled || isGenerating ? 'opacity-50 cursor-not-allowed' : 'hover:bg-card-active active:bg-accent/20'} 
               ${isDragging ? 'opacity-50' : ''}`}
-      title={maskType.disabled ? 'Coming Soon' : activePatchContainerId ? `Add ${maskType.name} to Current Edit` : `Create New ${maskType.name} Edit`}
+      data-tooltip={maskType.disabled ? 'Coming Soon' : activePatchContainerId ? `Add ${maskType.name} to Current Edit` : `Create New ${maskType.name} Edit`}
     >
       <maskType.icon size={24} /> <span className="text-xs">{maskType.name}</span>
     </button>
@@ -992,7 +992,7 @@ function ContainerRow({
         <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             className="p-1 hover:text-text-primary text-text-secondary"
-            title={container.visible ? "Hide Edit" : "Show Edit"}
+            data-tooltip={container.visible ? "Hide Edit" : "Show Edit"}
             onClick={(e) => {
               e.stopPropagation();
               updateContainer(container.id, { visible: !container.visible });
@@ -1002,7 +1002,7 @@ function ContainerRow({
           </button>
           <button
             className="p-1 hover:text-red-500 text-text-secondary"
-            title="Delete Edit"
+            data-tooltip="Delete Edit"
             onClick={(e) => {
               e.stopPropagation();
               handleDelete(container.id);
@@ -1193,7 +1193,7 @@ function SubMaskRow({
       <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
           className="p-1 hover:bg-bg-primary rounded text-text-secondary"
-          title={subMask.mode === SubMaskMode.Additive ? "Switch to Subtract" : "Switch to Add"}
+          data-tooltip={subMask.mode === SubMaskMode.Additive ? "Switch to Subtract" : "Switch to Add"}
           onClick={(e) => {
             e.stopPropagation();
             updateSubMask(subMask.id, {
@@ -1205,7 +1205,7 @@ function SubMaskRow({
         </button>
         <button
           className="p-1 hover:text-red-500 text-text-secondary"
-          title="Delete Component"
+          data-tooltip="Delete Component"
           onClick={(e) => {
             e.stopPropagation();
             handleDelete();

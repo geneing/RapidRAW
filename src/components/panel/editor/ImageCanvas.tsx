@@ -8,6 +8,8 @@ import { Adjustments, AiPatch, Coord, MaskContainer } from '../../../utils/adjus
 import { Mask, SubMask, SubMaskMode, ToolType } from '../right/Masks';
 import { BrushSettings, SelectedImage } from '../../ui/AppProperties';
 import { RenderSize } from '../../../hooks/useImageRenderSize';
+import type { OverlayMode } from '../right/CropPanel';
+import CompositionOverlays from './overlays/CompositionOverlays';
 
 interface CursorPreview {
   visible: boolean;
@@ -58,6 +60,8 @@ interface ImageCanvasProps {
   isWbPickerActive?: boolean;
   onWbPicked?: () => void;
   setAdjustments(fn: (prev: Adjustments) => Adjustments): void;
+  overlayMode?: OverlayMode;
+  overlayRotation?: number;
 }
 
 interface ImageLayer {
@@ -78,65 +82,20 @@ interface MaskOverlay {
   subMask: SubMask;
 }
 
-const CustomGrid = ({ 
-  denseVisible, 
-  ruleOfThirdsVisible 
-}: { 
-  denseVisible: boolean; 
-  ruleOfThirdsVisible: boolean; 
-}) => (
-  <div className="absolute inset-0 pointer-events-none w-full h-full">
-
-    <div 
-      className={clsx(
-        "absolute inset-0 w-full h-full transition-opacity duration-300 ease-in-out",
-        ruleOfThirdsVisible ? "opacity-100" : "opacity-0"
-      )}
-    >
-       <div className="absolute top-0 bottom-0 border-l border-white/40 left-1/3" />
-       <div className="absolute top-0 bottom-0 border-l border-white/40 left-2/3" />
-       <div className="absolute left-0 right-0 border-t border-white/40 top-1/3" />
-       <div className="absolute left-0 right-0 border-t border-white/40 top-2/3" />
-    </div>
-
-    <div 
-      className={clsx(
-        "absolute inset-0 w-full h-full transition-opacity duration-500 ease-in-out",
-        denseVisible ? "opacity-100" : "opacity-0"
-      )}
-    >
-       {[...Array(17)].map((_, i) => (
-         <div 
-           key={`v-${i}`} 
-           className="absolute top-0 bottom-0 border-l border-white/40" 
-           style={{ left: `${(i + 1) * 5.555}%` }} 
-         />
-       ))}
-       {[...Array(17)].map((_, i) => (
-         <div 
-           key={`h-${i}`} 
-           className="absolute left-0 right-0 border-t border-white/40" 
-           style={{ top: `${(i + 1) * 5.555}%` }} 
-         />
-       ))}
-    </div>
-  </div>
-);
-
 const ORIGINAL_LAYER = 'original';
 
 const MaskOverlay = memo(
   ({
-    adjustments,
-    isToolActive,
-    isSelected,
-    onMaskMouseEnter,
-    onMaskMouseLeave,
-    onSelect,
-    onUpdate,
-    scale,
-    subMask,
-  }: MaskOverlay) => {
+     adjustments,
+     isToolActive,
+     isSelected,
+     onMaskMouseEnter,
+     onMaskMouseLeave,
+     onSelect,
+     onUpdate,
+     scale,
+     subMask,
+   }: MaskOverlay) => {
     const shapeRef = useRef<any>(null);
     const trRef = useRef<any>(null);
 
@@ -152,45 +111,31 @@ const MaskOverlay = memo(
       }
     }, [isSelected]);
 
-    const handleRadialDrag = useCallback(
-      (e: any) => {
-        onUpdate(subMask.id, {
-          parameters: {
-            ...subMask.parameters,
-            centerX: e.target.x() / scale + cropX,
-            centerY: e.target.y() / scale + cropY,
-          },
-        });
-      },
-      [subMask.id, subMask.parameters, onUpdate, scale, cropX, cropY],
-    );
-
     const handleRadialTransform = useCallback(() => {
       const node = shapeRef.current;
-      if (!node) {
-        return;
-      }
+      if (!node) return;
 
-      onUpdate(subMask.id, {
-        parameters: {
-          ...subMask.parameters,
-          centerX: node.x() / scale + cropX,
-          centerY: node.y() / scale + cropY,
-          radiusX: (node.radiusX() * node.scaleX()) / scale,
-          radiusY: (node.radiusY() * node.scaleY()) / scale,
-          rotation: node.rotation(),
-        },
-      });
-    }, [subMask.id, subMask.parameters, onUpdate, scale, cropX, cropY]);
+      const scaleX = Math.abs(node.scaleX());
+      const scaleY = Math.abs(node.scaleY());
+
+      if (node.radiusX() * scaleX < 5 || node.radiusY() * scaleY < 5) {
+        node.scaleX(node.lastValidScaleX || 1);
+        node.scaleY(node.lastValidScaleY || 1);
+      } else {
+        node.lastValidScaleX = scaleX;
+        node.lastValidScaleY = scaleY;
+      }
+    }, []);
 
     const handleRadialTransformEnd = useCallback(() => {
       const node = shapeRef.current;
-      if (!node) {
-        return;
-      }
+      if (!node) return;
 
       const scaleX = node.scaleX();
       const scaleY = node.scaleY();
+
+      const newRadiusX = (node.radiusX() * scaleX) / scale;
+      const newRadiusY = (node.radiusY() * scaleY) / scale;
 
       node.scaleX(1);
       node.scaleY(1);
@@ -200,9 +145,19 @@ const MaskOverlay = memo(
           ...subMask.parameters,
           centerX: node.x() / scale + cropX,
           centerY: node.y() / scale + cropY,
-          radiusX: (node.radiusX() * scaleX) / scale,
-          radiusY: (node.radiusY() * scaleY) / scale,
+          radiusX: newRadiusX,
+          radiusY: newRadiusY,
           rotation: node.rotation(),
+        },
+      });
+    }, [subMask.id, subMask.parameters, onUpdate, scale, cropX, cropY]);
+
+    const handleRadialDragEnd = useCallback((e: any) => {
+      onUpdate(subMask.id, {
+        parameters: {
+          ...subMask.parameters,
+          centerX: e.target.x() / scale + cropX,
+          centerY: e.target.y() / scale + cropY,
         },
       });
     }, [subMask.id, subMask.parameters, onUpdate, scale, cropX, cropY]);
@@ -314,27 +269,38 @@ const MaskOverlay = memo(
       return (
         <>
           <Ellipse
-            draggable
-            onDragEnd={handleRadialDrag}
-            onDragMove={handleRadialDrag}
-            onMouseEnter={onMaskMouseEnter}
-            onMouseLeave={onMaskMouseLeave}
+            {...commonProps}
+            ref={shapeRef}
+            draggable={!isToolActive}
+            onDragEnd={handleRadialDragEnd}
             onTransform={handleRadialTransform}
             onTransformEnd={handleRadialTransformEnd}
+            onMouseEnter={onMaskMouseEnter}
+            onMouseLeave={onMaskMouseLeave}
             radiusX={radiusX * scale}
             radiusY={radiusY * scale}
-            ref={shapeRef}
             rotation={rotation}
             x={(centerX - cropX) * scale}
             y={(centerY - cropY) * scale}
-            {...commonProps}
           />
           {isSelected && (
             <Transformer
-              boundBoxFunc={(oldBox, newBox) => newBox}
+              ref={trRef}
+              centeredScaling={true}
+              rotateEnabled={true}
+              enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right', 'top-center', 'bottom-center', 'middle-left', 'middle-right']}
+              onMouseDown={(e) => {
+                e.cancelBubble = true;
+                e.evt.preventDefault();
+              }}
+              boundBoxFunc={(oldBox, newBox) => {
+                if (Math.abs(newBox.width) < 5 || Math.abs(newBox.height) < 5) {
+                  return oldBox;
+                }
+                return newBox;
+              }}
               onMouseEnter={onMaskMouseEnter}
               onMouseLeave={onMaskMouseLeave}
-              ref={trRef}
             />
           )}
         </>
@@ -361,7 +327,7 @@ const MaskOverlay = memo(
         hitStrokeWidth: 20,
       };
 
-      const perpendicularDragBoundFunc = function (pos: any) {
+      const perpendicularDragBoundFunc = function(pos: any) {
         const group = this.getParent();
         const transform = group.getAbsoluteTransform().copy();
         transform.invert();
@@ -527,6 +493,8 @@ const ImageCanvas = memo(
     isWbPickerActive = false,
     onWbPicked,
     setAdjustments,
+    overlayRotation,
+    overlayMode
   }: ImageCanvasProps) => {
     const [isCropViewVisible, setIsCropViewVisible] = useState(false);
     const [layers, setLayers] = useState<Array<ImageLayer>>([]);
@@ -538,6 +506,7 @@ const ImageCanvas = memo(
 
     const isDrawing = useRef(false);
     const drawingStageRef = useRef<any>(null);
+    const lastBrushPoint = useRef<Coord | null>(null);
     const currentLine = useRef<DrawnLine | null>(null);
     const [previewLine, setPreviewLine] = useState<DrawnLine | null>(null);
     const [cursorPreview, setCursorPreview] = useState<CursorPreview>({ x: 0, y: 0, visible: false });
@@ -605,6 +574,7 @@ const ImageCanvas = memo(
       isDrawing.current = false;
       drawingStageRef.current = null;
       currentLine.current = null;
+      lastBrushPoint.current = null;
       setPreviewLine(null);
     }, [isToolActive]);
 
@@ -625,8 +595,8 @@ const ImageCanvas = memo(
       const currentPreviewUrl = showOriginal
         ? transformedOriginalUrl
         : isFullResolution && !isLoadingFullRes && fullResolutionUrl
-        ? fullResolutionUrl
-        : finalPreviewUrl;
+          ? fullResolutionUrl
+          : finalPreviewUrl;
 
       if (imageChanged) {
         imagePathRef.current = currentImagePath;
@@ -681,9 +651,9 @@ const ImageCanvas = memo(
       const layerToFadeIn = layers.find((l: ImageLayer) => l.opacity === 0);
       if (layerToFadeIn) {
         const frame = requestAnimationFrame(() => {
-           setLayers((prev: Array<ImageLayer>) =>
-             prev.map((l: ImageLayer) => (l.id === layerToFadeIn.id ? { ...l, opacity: 1 } : l)),
-           );
+          setLayers((prev: Array<ImageLayer>) =>
+            prev.map((l: ImageLayer) => (l.id === layerToFadeIn.id ? { ...l, opacity: 1 } : l)),
+          );
         });
         return () => cancelAnimationFrame(frame);
       }
@@ -710,7 +680,7 @@ const ImageCanvas = memo(
 
     const handleWbClick = useCallback((e: any) => {
       if (!isWbPickerActive || !finalPreviewUrl || !onWbPicked) return;
-      
+
       const stage = e.target.getStage();
       const pointerPos = stage.getPointerPosition();
       if (!pointerPos) return;
@@ -720,13 +690,13 @@ const ImageCanvas = memo(
 
       const imgLogicalWidth = imageRenderSize.width / imageRenderSize.scale;
       const imgLogicalHeight = imageRenderSize.height / imageRenderSize.scale;
-      
+
       if (x < 0 || x > imgLogicalWidth || y < 0 || y > imgLogicalHeight) return;
 
       const img = new Image();
-      img.crossOrigin = "Anonymous";
+      img.crossOrigin = 'Anonymous';
       img.src = finalPreviewUrl;
-      
+
       img.onload = () => {
         const radius = 5;
         const side = radius * 2 + 1;
@@ -755,7 +725,7 @@ const ImageCanvas = memo(
 
         const imageData = ctx.getImageData(0, 0, sw, sh);
         const data = imageData.data;
-        
+
         let rTotal = 0, gTotal = 0, bTotal = 0;
         let count = 0;
 
@@ -795,14 +765,14 @@ const ImageCanvas = memo(
 
     const handleMouseDown = useCallback(
       (e: any) => {
+        e.evt.preventDefault();
+
         if (isWbPickerActive) {
-          e.evt.preventDefault();
           handleWbClick(e);
           return;
         }
 
         if (isToolActive) {
-          e.evt.preventDefault();
           const stage = e.target.getStage();
           const pos = stage.getPointerPosition();
           if (!pos) {
@@ -812,9 +782,71 @@ const ImageCanvas = memo(
             return;
           }
 
+          const toolType = isAiSubjectActive ? ToolType.AiSeletor : ToolType.Brush;
+          const isShiftClick = isBrushActive && e.evt.shiftKey && lastBrushPoint.current;
+
+          if (isShiftClick) {
+            const { scale } = imageRenderSize;
+            const cropX = adjustments.crop?.x || 0;
+            const cropY = adjustments.crop?.y || 0;
+
+            const startImageSpace = lastBrushPoint.current!;
+            const endImageSpace = {
+              x: pos.x / scale + cropX,
+              y: pos.y / scale + cropY,
+            };
+
+            const dx = endImageSpace.x - startImageSpace.x;
+            const dy = endImageSpace.y - startImageSpace.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const steps = Math.max(Math.ceil(distance), 2);
+            const interpolatedPoints: Coord[] = [];
+            for (let i = 0; i <= steps; i++) {
+              const t = i / steps;
+              interpolatedPoints.push({
+                x: startImageSpace.x + dx * t,
+                y: startImageSpace.y + dy * t,
+              });
+            }
+
+            const imageSpaceLine: DrawnLine = {
+              brushSize: (brushSettings?.size ?? 0) / scale,
+              feather: brushSettings?.feather ? brushSettings?.feather / 100 : 0,
+              points: interpolatedPoints,
+              tool: brushSettings?.tool ?? ToolType.Brush,
+            };
+
+            const activeId = isMasking ? activeMaskId : activeAiSubMaskId;
+            const existingLines = activeSubMask?.parameters?.lines || [];
+
+            updateSubMask(activeId, {
+              parameters: {
+                ...activeSubMask?.parameters,
+                lines: [...existingLines, imageSpaceLine],
+              },
+            });
+
+            lastBrushPoint.current = endImageSpace;
+
+            const screenPoints = interpolatedPoints.map((p) => ({
+              x: (p.x - cropX) * scale,
+              y: (p.y - cropY) * scale,
+            }));
+            const previewDrwnLine: DrawnLine = {
+              brushSize: brushSettings?.size ?? 0,
+              points: screenPoints,
+              tool: brushSettings?.tool ?? ToolType.Brush,
+            };
+            setPreviewLine(previewDrwnLine);
+            setTimeout(() => setPreviewLine(null), 50);
+
+            isDrawing.current = false;
+            currentLine.current = null;
+            return;
+          }
+
           isDrawing.current = true;
           drawingStageRef.current = stage;
-          const toolType = isAiSubjectActive ? ToolType.AiSeletor : ToolType.Brush;
 
           const newLine: DrawnLine = {
             brushSize: isBrushActive && brushSettings?.size ? brushSettings.size : 2,
@@ -834,7 +866,7 @@ const ImageCanvas = memo(
           }
         }
       },
-      [isWbPickerActive, handleWbClick, isBrushActive, isAiSubjectActive, brushSettings, onSelectMask, onSelectAiSubMask, isMasking, isAiEditing],
+      [isWbPickerActive, handleWbClick, isBrushActive, isAiSubjectActive, brushSettings, onSelectMask, onSelectAiSubMask, isMasking, isAiEditing, imageRenderSize, adjustments.crop, activeMaskId, activeAiSubMaskId, activeSubMask, updateSubMask],
     );
 
     const handleMouseMove = useCallback(
@@ -943,6 +975,14 @@ const ImageCanvas = memo(
             lines: [...existingLines, imageSpaceLine],
           },
         });
+
+        const lastPoint = line.points[line.points.length - 1];
+        if (lastPoint) {
+          lastBrushPoint.current = {
+            x: lastPoint.x / scale + cropX,
+            y: lastPoint.y / scale + cropY,
+          };
+        }
       }
     }, [
       activeAiSubMaskId,
@@ -971,18 +1011,21 @@ const ImageCanvas = memo(
 
     useEffect(() => {
       if (!isToolActive) return;
+
       function onMove(e: MouseEvent) {
         if (!isDrawing.current) {
           return;
         }
         handleMouseMove(e);
       }
+
       function onUp() {
         if (!isDrawing.current) {
           return;
         }
         handleMouseUp();
       }
+
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
       return () => {
@@ -1113,7 +1156,21 @@ const ImageCanvas = memo(
       return transforms.join(' ');
     }, [adjustments.rotation, adjustments.flipHorizontal, adjustments.flipVertical]);
 
-    const showCustomGrid = isRotationActive || isStraightenActive;
+    const getCropDimensions = () => {
+      if (!crop || !uncroppedImageRenderSize?.width || !uncroppedImageRenderSize?.height) {
+        return { width: 0, height: 0 };
+      }
+
+      const width = crop.unit === '%'
+        ? uncroppedImageRenderSize.width * (crop.width / 100)
+        : crop.width;
+
+      const height = crop.unit === '%'
+        ? uncroppedImageRenderSize.height * (crop.height / 100)
+        : crop.height;
+
+      return { width, height };
+    };
 
     return (
       <div className="relative" style={{ width: '100%', height: '100%' }}>
@@ -1144,7 +1201,7 @@ const ImageCanvas = memo(
                     src={layer.url}
                     style={{
                       opacity: layer.opacity,
-                      transition: 'opacity 100ms linear',
+                      transition: 'opacity 80ms linear',
                       willChange: 'opacity, transform',
                       imageRendering: 'high-quality',
                       WebkitImageRendering: 'high-quality',
@@ -1159,7 +1216,6 @@ const ImageCanvas = memo(
                   alt="Mask Overlay"
                   className="absolute object-contain pointer-events-none"
                   src={displayedMaskUrl}
-                  decoding="async"
                   onTransitionEnd={handleMaskTransitionEnd}
                   style={{
                     height: `${imageRenderSize.height}px`,
@@ -1189,6 +1245,8 @@ const ImageCanvas = memo(
               position: 'absolute',
               top: `${imageRenderSize.offsetY}px`,
               zIndex: 4,
+              touchAction: 'none',
+              userSelect: 'none',
             }}
             width={imageRenderSize.width}
           >
@@ -1258,12 +1316,24 @@ const ImageCanvas = memo(
                 onChange={setCrop}
                 onComplete={handleCropComplete}
                 ruleOfThirds={false}
-                renderSelectionAddon={() => (
-                  <CustomGrid
-                    denseVisible={isRotationActive && !isStraightenActive}
-                    ruleOfThirdsVisible={!isStraightenActive} 
-                  />
-                )}
+                renderSelectionAddon={() => {
+                  const { width, height } = getCropDimensions();
+                  if (width <= 0 || height <= 0) {
+                    return null;
+                  }
+                  const showDenseGrid = isRotationActive && !isStraightenActive;
+                  const currentOverlayMode =
+                    isRotationActive || isStraightenActive ? 'none' : overlayMode || 'none';
+                  return (
+                    <CompositionOverlays
+                      width={width}
+                      height={height}
+                      mode={currentOverlayMode}
+                      rotation={overlayRotation || 0}
+                      denseVisible={showDenseGrid}
+                    />
+                  );
+                }}
               >
                 <img
                   alt="Crop preview"

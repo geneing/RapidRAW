@@ -139,7 +139,7 @@ const EditorToolbar = memo(
           <button
             className="bg-surface text-text-primary p-2 rounded-full hover:bg-card-active transition-colors flex-shrink-0"
             onClick={onBackToLibrary}
-            title="Back to Library"
+            data-tooltip="Back to Library"
           >
             <ArrowLeft size={20} />
           </button>
@@ -240,7 +240,7 @@ const EditorToolbar = memo(
                 )}
               >
                 {exifData.shutter && (
-                  <div className="flex items-center gap-1.5" title="Shutter Speed">
+                  <div className="flex items-center gap-1.5" data-tooltip="Shutter Speed">
                     <span className="text-text-secondary">
                       <IconShutter />
                     </span>
@@ -248,7 +248,7 @@ const EditorToolbar = memo(
                   </div>
                 )}
                 {exifData.fNumber && (
-                  <div className="flex items-center gap-1.5" title="Aperture">
+                  <div className="flex items-center gap-1.5" data-tooltip="Aperture">
                     <span className="text-text-secondary">
                       <IconAperture />
                     </span>
@@ -256,7 +256,7 @@ const EditorToolbar = memo(
                   </div>
                 )}
                 {exifData.iso && (
-                  <div className="flex items-center gap-1.5" title="ISO">
+                  <div className="flex items-center gap-1.5" data-tooltip="ISO">
                     <span className="text-text-secondary">
                       <IconIso />
                     </span>
@@ -264,7 +264,7 @@ const EditorToolbar = memo(
                   </div>
                 )}
                 {exifData.focal && (
-                  <div className="flex items-center gap-1.5" title="Focal Length">
+                  <div className="flex items-center gap-1.5" data-tooltip="Focal Length">
                     <span className="text-text-secondary">
                       <IconFocalLength />
                     </span>
@@ -307,7 +307,7 @@ const EditorToolbar = memo(
             className="bg-surface text-text-primary p-2 rounded-full hover:bg-card-active transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={!canUndo}
             onClick={onUndo}
-            title="Undo (Ctrl+Z)"
+            data-tooltip="Undo (Ctrl+Z)"
           >
             <Undo size={20} />
           </button>
@@ -315,7 +315,7 @@ const EditorToolbar = memo(
             className="bg-surface text-text-primary p-2 rounded-full hover:bg-card-active transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={!canRedo}
             onClick={onRedo}
-            title="Redo (Ctrl+Y)"
+            data-tooltip="Redo (Ctrl+Y)"
           >
             <Redo size={20} />
           </button>
@@ -327,7 +327,7 @@ const EditorToolbar = memo(
                 : 'bg-surface hover:bg-card-active text-text-primary',
             )}
             onClick={onToggleWaveform}
-            title="Toggle Waveform (W)"
+            data-tooltip="Toggle Waveform (W)"
           >
             <Waves size={20} />
           </button>
@@ -340,7 +340,7 @@ const EditorToolbar = memo(
                 : 'bg-surface hover:bg-card-active text-text-primary',
             )}
             onClick={onToggleShowOriginal}
-            title={showOriginal ? 'Show Edited (.)' : 'Show Original (.)'}
+            data-tooltip={showOriginal ? 'Show Edited (.)' : 'Show Original (.)'}
           >
             {showOriginal ? <EyeOff size={20} /> : <Eye size={20} />}
           </button>
@@ -348,7 +348,7 @@ const EditorToolbar = memo(
             className="bg-surface text-text-primary p-2 rounded-full hover:bg-card-active transition-colors disabled:opacity-50 disabled:cursor-not-allowed relative"
             disabled={isFullScreenLoading}
             onClick={onToggleFullScreen}
-            title="Toggle Fullscreen (F)"
+            data-tooltip="Toggle Fullscreen (F)"
           >
             <div className="relative w-5 h-5 flex items-center justify-center">
               <AnimatePresence mode="wait" initial={false}>

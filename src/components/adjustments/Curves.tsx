@@ -504,7 +504,7 @@ export default function CurveGraph({
             )}
             key="clipping"
             onClick={handleToggleClipping}
-            title="Toggle Clipping Warnings"
+            data-tooltip="Toggle Clipping Warnings"
           >
             <AlertOctagon size={14} />
           </button>

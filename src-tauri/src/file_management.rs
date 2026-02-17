@@ -197,6 +197,8 @@ pub struct ExportPreset {
     pub watermark_scale: u32,
     pub watermark_spacing: u32,
     pub watermark_opacity: u32,
+    #[serde(default)]
+    pub export_masks: Option<bool>,
 }
 
 fn default_export_presets() -> Vec<ExportPreset> {
@@ -219,6 +221,7 @@ fn default_export_presets() -> Vec<ExportPreset> {
             watermark_scale: 10,
             watermark_spacing: 5,
             watermark_opacity: 75,
+            export_masks: Some(false),
         },
         ExportPreset {
             id: "default-fast".to_string(),
@@ -238,6 +241,7 @@ fn default_export_presets() -> Vec<ExportPreset> {
             watermark_scale: 10,
             watermark_spacing: 5,
             watermark_opacity: 75,
+            export_masks: Some(false),
         },
     ]
 }
@@ -422,9 +426,15 @@ pub async fn read_exif_for_paths(
         .par_iter()
         .filter_map(|virtual_path| {
             let (source_path, _) = parse_virtual_path(virtual_path);
-            let source_path_str = source_path.to_string_lossy().to_string();
-            exif_processing::extract_metadata(&source_path_str)
-                .map(|exif_map| (virtual_path.clone(), exif_map))
+
+            let exif_map = if let Ok(mmap) = read_file_mapped(&source_path) {
+                exif_processing::extract_metadata(&mmap)
+            } else {
+                let bytes = fs::read(&source_path).ok()?;
+                exif_processing::extract_metadata(&bytes)
+            };
+
+            exif_map.map(|map| (virtual_path.clone(), map))
         })
         .collect();
 
@@ -1433,7 +1443,7 @@ pub fn save_metadata_and_update_thumbnail(
             &path_clone,
             &thumb_cache_dir,
             gpu_context.as_ref(),
-            preloaded_image_option.as_ref(),
+            preloaded_image_option.as_deref(),
             true,
             &app_handle_clone,
         );
